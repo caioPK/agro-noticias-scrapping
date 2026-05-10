@@ -21,3 +21,19 @@ export interface ScraperModule {
   /** Descrição opcional */
   description?: string;
 }
+
+/**
+ * Interface abstrata para fonte de dados (Google Sheets ou Excel local).
+ *
+ * Qualquer backend de planilha deve implementar esses 3 métodos.
+ */
+export interface DataSource {
+  /** Lê as URLs da coluna configurada. Retorna pares {linha, url}. */
+  readUrls(): Promise<{ row: number; url: string }[]>;
+
+  /** Escreve o resultado na célula de output correspondente à linha. */
+  writeResult(row: number, value: string): Promise<void>;
+
+  /** Escreve uma mensagem de erro na célula de output correspondente. */
+  writeError(row: number, error: string): Promise<void>;
+}

@@ -1,6 +1,7 @@
 import { google, sheets_v4 } from 'googleapis';
 import * as fs from 'fs';
 import { config } from './config';
+import { DataSource } from './types';
 
 let sheetsClient: sheets_v4.Sheets | null = null;
 
@@ -8,8 +9,14 @@ let sheetsClient: sheets_v4.Sheets | null = null;
  * Autentica com a API do Google Sheets usando a Service Account
  * e retorna o cliente da Sheets API.
  */
-export async function getSheetsClient(): Promise<sheets_v4.Sheets> {
+async function getSheetsClient(): Promise<sheets_v4.Sheets> {
   if (sheetsClient) return sheetsClient;
+
+  if (!config.spreadsheetId) {
+    throw new Error(
+      'SPREADSHEET_ID não configurado. Defina no arquivo .env.'
+    );
+  }
 
   if (!fs.existsSync(config.googleServiceAccountKeyPath)) {
     throw new Error(
@@ -39,72 +46,67 @@ export async function getSheetsClient(): Promise<sheets_v4.Sheets> {
 }
 
 /**
- * Lê as URLs da coluna configurada na planilha.
- * Retorna um array de objetos com o número da linha e a URL.
+ * Implementação do DataSource usando Google Sheets API.
  */
-export async function readUrls(): Promise<{ row: number; url: string }[]> {
-  const sheets = await getSheetsClient();
+export class GoogleSheetsDataSource implements DataSource {
+  async readUrls(): Promise<{ row: number; url: string }[]> {
+    const sheets = await getSheetsClient();
 
-  const range = `${config.sheetName}!${config.urlColumn}${config.startRow}:${config.urlColumn}`;
+    const range = `${config.sheetName}!${config.urlColumn}${config.startRow}:${config.urlColumn}`;
 
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId: config.spreadsheetId,
-    range,
-  });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.spreadsheetId,
+      range,
+    });
 
-  const rows = response.data.values || [];
-  const results: { row: number; url: string }[] = [];
+    const rows = response.data.values || [];
+    const results: { row: number; url: string }[] = [];
 
-  rows.forEach((row, index) => {
-    const url = row[0]?.toString().trim();
-    if (url) {
-      results.push({
-        row: config.startRow + index,
-        url,
-      });
-    }
-  });
+    rows.forEach((row, index) => {
+      const url = row[0]?.toString().trim();
+      if (url) {
+        results.push({
+          row: config.startRow + index,
+          url,
+        });
+      }
+    });
 
-  console.log(`📋 ${results.length} URLs encontradas na planilha`);
-  return results;
-}
+    console.log(`📋 ${results.length} URLs encontradas na planilha (Google Sheets)`);
+    return results;
+  }
 
-/**
- * Escreve o resultado em uma célula específica da coluna de output.
- */
-export async function writeResult(row: number, value: string): Promise<void> {
-  const sheets = await getSheetsClient();
+  async writeResult(row: number, value: string): Promise<void> {
+    const sheets = await getSheetsClient();
 
-  const cell = `${config.sheetName}!${config.outputColumn}${row}`;
+    const cell = `${config.sheetName}!${config.outputColumn}${row}`;
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: config.spreadsheetId,
-    range: cell,
-    valueInputOption: 'RAW',
-    requestBody: {
-      values: [[value]],
-    },
-  });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.spreadsheetId,
+      range: cell,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[value]],
+      },
+    });
 
-  console.log(`  📝 Resultado escrito na célula ${cell}`);
-}
+    console.log(`  📝 Resultado escrito na célula ${cell}`);
+  }
 
-/**
- * Escreve um status de erro em uma célula específica.
- */
-export async function writeError(row: number, error: string): Promise<void> {
-  const sheets = await getSheetsClient();
+  async writeError(row: number, error: string): Promise<void> {
+    const sheets = await getSheetsClient();
 
-  const cell = `${config.sheetName}!${config.outputColumn}${row}`;
+    const cell = `${config.sheetName}!${config.outputColumn}${row}`;
 
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: config.spreadsheetId,
-    range: cell,
-    valueInputOption: 'RAW',
-    requestBody: {
-      values: [[`[ERRO] ${error}`]],
-    },
-  });
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: config.spreadsheetId,
+      range: cell,
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[`[ERRO] ${error}`]],
+      },
+    });
 
-  console.log(`  ❌ Erro escrito na célula ${cell}`);
+    console.log(`  ❌ Erro escrito na célula ${cell}`);
+  }
 }

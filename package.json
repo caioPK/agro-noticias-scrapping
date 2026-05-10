@@ -8,13 +8,18 @@
     "start": "node dist/index.js",
     "scrapers:list": "ts-node -e \"const {listAvailableScrapers} = require('./src/scraper-loader'); console.log(listAvailableScrapers());\""
   },
-  "keywords": ["web-scraping", "puppeteer", "google-sheets"],
+  "keywords": [
+    "web-scraping",
+    "puppeteer",
+    "google-sheets"
+  ],
   "author": "",
   "license": "ISC",
   "description": "Web scraper que lê URLs de uma Google Sheets, executa scrapers customizados por domínio e escreve os resultados de volta na planilha.",
   "dependencies": {
     "@types/node": "^25.6.0",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "googleapis": "^171.4.0",
     "puppeteer": "^24.41.0",
     "ts-node": "^10.9.2",

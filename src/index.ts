@@ -1,6 +1,7 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
 import { config } from './config';
-import { readUrls, writeResult, writeError } from './sheets';
+import { createDataSource } from './data-source';
+import { DataSource } from './types';
 import { extractDomain, loadScraper, listAvailableScrapers } from './scraper-loader';
 
 /**
@@ -15,6 +16,7 @@ function delay(ms: number): Promise<void> {
  */
 async function processUrl(
   browser: Browser,
+  dataSource: DataSource,
   url: string,
   row: number
 ): Promise<void> {
@@ -49,20 +51,20 @@ async function processUrl(
 
     if (!result || result.trim() === '') {
       console.log(`  ⚠️  Scraper retornou texto vazio`);
-      await writeResult(row, '[VAZIO] Nenhum conteúdo extraído');
+      await dataSource.writeResult(row, '[VAZIO] Nenhum conteúdo extraído');
     } else {
-      // Trunca se for muito grande para o Google Sheets (limite ~50k caracteres por célula)
+      // Trunca se for muito grande (limite ~50k caracteres por célula no Google Sheets / Excel)
       const maxLength = 49000;
       const truncated = result.length > maxLength
         ? result.substring(0, maxLength) + '\n\n[...TRUNCADO]'
         : result;
 
       console.log(`  ✅ Extraído: ${result.length} caracteres`);
-      await writeResult(row, truncated);
+      await dataSource.writeResult(row, truncated);
     }
   } catch (error: any) {
     console.error(`  ❌ Erro na linha ${row}: ${error.message}`);
-    await writeError(row, error.message.substring(0, 500));
+    await dataSource.writeError(row, error.message.substring(0, 500));
   } finally {
     if (page) {
       await page.close();
@@ -75,8 +77,11 @@ async function processUrl(
  */
 async function main(): Promise<void> {
   console.log('═══════════════════════════════════════════════════');
-  console.log('  🕷️  Web Scraper — Google Sheets + Puppeteer');
+  console.log('  🕷️  Web Scraper — Puppeteer + Planilhas');
   console.log('═══════════════════════════════════════════════════\n');
+
+  // Cria a fonte de dados (Google Sheets ou Excel local)
+  const dataSource = createDataSource();
 
   // Lista scrapers disponíveis
   const availableScrapers = listAvailableScrapers();
@@ -88,7 +93,7 @@ async function main(): Promise<void> {
   }
 
   // Lê as URLs da planilha
-  const urls = await readUrls();
+  const urls = await dataSource.readUrls();
 
   if (urls.length === 0) {
     console.log('ℹ️  Nenhuma URL encontrada na planilha. Nada a fazer.');
@@ -112,7 +117,7 @@ async function main(): Promise<void> {
     for (let i = 0; i < urls.length; i++) {
       const { row, url } = urls[i];
 
-      await processUrl(browser, url, row);
+      await processUrl(browser, dataSource, url, row);
 
       // Delay entre requisições (exceto na última)
       if (i < urls.length - 1 && config.delayBetweenRequests > 0) {
