@@ -83,7 +83,7 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     // ── BAJADA / SUBTÍTULO (h3 = supertítulo/volanta/bajada) ───────────────
     const bajada =
       clean(document.querySelector('.b-single-chain__children-stack h3.p12Header')?.textContent) ||
-      clean(ldArticle?.description) ||
+      // clean(ldArticle?.description) ||
       '';
 
     // ── EDITORIA ────────────────────────────────────────────────────────────
