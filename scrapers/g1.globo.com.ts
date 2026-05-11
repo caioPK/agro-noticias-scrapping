@@ -277,12 +277,7 @@ export default async function g1Scraper(page: Page): Promise<string> {
   const subtitleBlock = data.subtitle ? `Subtítulo: ${data.subtitle}\n` : '';
 
   const output =
-    `**** pais_br jornal_g1 *ano_${data.publicationYear}\n\n
-
-    ${data.title}\n
-    ${subtitleBlock}\n
-
-    ${data.content}`;
+    `**** *pais_br *jornal_g1 *ano_${data.publicationYear}\n ${data.title}. ${subtitleBlock}. ${data.content}`;
 
   return output;
 }

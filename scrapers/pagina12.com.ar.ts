@@ -76,13 +76,28 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     //             .p12Date time[datetime] → .p12Date textContent → URL
     let publishYear: string = NOT_FOUND;
 
+    // 5) .p12Date — elemento nativo do P12
+    //    Prefere time[datetime] (ISO 8601, ex: "2024-12-30T03:44:31Z")
+    //    e cai no textContent como segurança (ex: "30 de diciembre de 2024 - 0:44")
+    if (publishYear === NOT_FOUND) {
+      console.log('ano form p12date');
+      const p12DateEl = document.querySelector('.p12Date time');
+      const p12Datetime = clean(p12DateEl?.getAttribute('datetime'));
+      const p12Text = clean(p12DateEl?.textContent || document.querySelector('.p12Date')?.textContent);
+      const raw = p12Datetime || p12Text;
+      if (raw) {
+        const m = raw.match(/(\d{4})/);
+        if (m) publishYear = m[1];
+      }
+    }
+
     // 1) JSON-LD: campo datePublished ou dateCreated
     // @ts-ignore-next-line
-    const ldDate = clean(ldArticle?.datePublished || ldArticle?.dateCreated);
-    if (ldDate) {
-      const m = ldDate.match(/(\d{4})/);
-      if (m) publishYear = m[1];
-    }
+    // const ldDate = clean(ldArticle?.datePublished || ldArticle?.dateCreated);
+    // if (ldDate) {
+    //   const m = ldDate.match(/(\d{4})/);
+    //   if (m) publishYear = m[1];
+    // }
 
     // 2) meta article:published_time (Open Graph / Facebook)
     if (publishYear === NOT_FOUND) {
@@ -120,19 +135,6 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       }
     }
 
-    // 5) .p12Date — elemento nativo do P12
-    //    Prefere time[datetime] (ISO 8601, ex: "2024-12-30T03:44:31Z")
-    //    e cai no textContent como segurança (ex: "30 de diciembre de 2024 - 0:44")
-    if (publishYear === NOT_FOUND) {
-      const p12DateEl = document.querySelector('.p12Date time');
-      const p12Datetime = clean(p12DateEl?.getAttribute('datetime'));
-      const p12Text = clean(p12DateEl?.textContent || document.querySelector('.p12Date')?.textContent);
-      const raw = p12Datetime || p12Text;
-      if (raw) {
-        const m = raw.match(/(\d{4})/);
-        if (m) publishYear = m[1];
-      }
-    }
 
     // 6) Fallback: extrai o ano diretamente da URL (padrão /YYYY-/)
     if (publishYear === NOT_FOUND) {
@@ -314,15 +316,11 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
 
   // 6) Monta a saída em texto formatado
   const tagsStr = data.tags.length ? data.tags.join(', ') : '[NÃO ENCONTRADO]';
-  const chapeauLine = data.chapeau ? `${data.chapeau}\n` : '';
-  const bajadaLine = data.bajada ? `${data.bajada}\n` : '';
+  const chapeauLine = data.chapeau ? `${data.chapeau}` : '';
+  const bajadaLine = data.bajada ? `${data.bajada}` : '';
 
   const output =
-    `**** pais_ag jornal_pagina12 *ano_${data.publishYear}\n\n
-    
-    ${data.title}\n
-    ${chapeauLine}${bajadaLine}\n
-
-    ${data.content}`;
+    `**** *pais_ag *jornal_pagina12 *ano_${data.publishYear}\n
+    ${data.title}. ${chapeauLine}. ${bajadaLine}. ${data.content}`;
   return output;
 }

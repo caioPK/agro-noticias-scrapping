@@ -156,7 +156,7 @@ export default async function exampleScraper(page: Page): Promise<any> {
 
     // return { anoPublicacao, textoMateria };
     return `
-      **** pais_br jornal_brasildefato * ano_${ anoPublicacao } \n\n
+      **** *pais_br *jornal_brasildefato *ano_${ anoPublicacao } \n
       ${textoMateria}
     `
   } catch (err) {

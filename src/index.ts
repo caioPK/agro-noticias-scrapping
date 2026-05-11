@@ -76,7 +76,7 @@ async function processUrl(
         : result;
 
       console.log(`  ✅ Extraído: ${result.length} caracteres`);
-      await dataSource.writeResult(row, truncated);
+      await dataSource.writeResult(row, truncated, result.length > maxLength);
     }
   } catch (error: any) {
     console.error(`  ❌ Erro na linha ${row}: ${error.message}`);
@@ -217,13 +217,15 @@ async function runFase2(): Promise<void> {
   });
 
   try {
-    for (let i = 0; i < urls.length; i++) {
+    const total = 5;
+    // const total = urls.length;
+    for (let i = 0; i < total; i++) {
       const { row, url } = urls[i];
 
       await processUrl(browser, dataSource, url, row);
 
       // Delay entre requisições (exceto na última)
-      if (i < urls.length - 1 && config.delayBetweenRequests > 0) {
+      if (i < total - 1 && config.delayBetweenRequests > 0) {
         console.log(`  ⏱️  Aguardando ${config.delayBetweenRequests}ms...`);
         await delay(config.delayBetweenRequests);
       }

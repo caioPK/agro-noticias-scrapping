@@ -32,7 +32,7 @@ export interface DataSource {
   readUrls(): Promise<{ row: number; url: string }[]>;
 
   /** Escreve o resultado na célula de output correspondente à linha. */
-  writeResult(row: number, value: string): Promise<void>;
+  writeResult(row: number, value: string, truncated?: boolean): Promise<void>;
 
   /** Escreve uma mensagem de erro na célula de output correspondente. */
   writeError(row: number, error: string): Promise<void>;

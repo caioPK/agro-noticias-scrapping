@@ -260,12 +260,8 @@ export default async function infobaeScraper(page: Page): Promise<string> {
   const subBlock = data.subtitle ? `${data.subtitle}\n` : '\n';
 
   const output =
-    `**** pais_ag jornal_infobae *ano_${data.publicationYear}\n\n
-    
-    ${data.title}\n
-    ${subBlock}
-    \n
-    ${data.content}`;
+    `**** *pais_ag *jornal_infobae *ano_${data.publicationYear}\n
+    ${data.title}. ${subBlock}. ${data.content}`;
 
   return output;
 }

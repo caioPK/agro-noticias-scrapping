@@ -110,11 +110,12 @@ export class ExcelDataSource implements DataSource {
     return results;
   }
 
-  async writeResult(row: number, value: string): Promise<void> {
+  async writeResult(row: number, value: string, truncated = false): Promise<void> {
     const worksheet = await this.getWorksheet();
     const colNumber = columnLetterToNumber(config.outputColumn.toUpperCase());
 
     worksheet.getCell(row, colNumber).value = value;
+    worksheet.getCell(row, (colNumber + 1)).value = truncated;
     await this.save();
 
     console.log(`  📝 Resultado escrito na célula ${config.outputColumn}${row}`);
