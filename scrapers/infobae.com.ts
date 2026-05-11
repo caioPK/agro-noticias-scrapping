@@ -98,7 +98,9 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     }
 
     // 3. Fallback: JSON-LD datePublished
+    // @ts-ignore-next-line
     if (publicationYear === NOT_FOUND && ldArticle?.datePublished) {
+    // @ts-ignore-next-line
       const ldYearMatch = String(ldArticle.datePublished).match(/\b(19|20)\d{2}\b/);
       if (ldYearMatch) publicationYear = ldYearMatch[0];
     }
@@ -115,6 +117,7 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     // ── EDITORIA ────────────────────────────────────────────────────────────
     // Prioridade: JSON-LD articleSection → meta article:section → URL
     let editoria: string = NOT_FOUND;
+    // @ts-ignore-next-line
     const ldSection = ldArticle?.articleSection;
     if (ldSection) {
       editoria = Array.isArray(ldSection) ? ldSection.join(' / ') : String(ldSection);
@@ -155,8 +158,9 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     if (kwMeta) {
       kwMeta.split(',').map((k) => clean(k)).filter(Boolean).forEach((k) => tagSet.add(k));
     }
-
+    // @ts-ignore-next-line
     if (ldArticle?.keywords && !tagSet.size) {
+      // @ts-ignore-next-line
       String(ldArticle.keywords).split(',').map((k: string) => clean(k)).filter(Boolean).forEach((k: string) => tagSet.add(k));
     }
 
