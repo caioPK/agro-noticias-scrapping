@@ -216,6 +216,15 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     const tags = [...tagMap.values()];
 
     // ── CONTEÚDO COMPLETO ───────────────────────────────────────────────────
+    // Estrutura de article.p12-article-body:
+    //  - p.c-paragraph              → parágrafos de texto
+    //  - h2.p12-article-body__h2   → intertítulos editoriais
+    //  - blockquote                 → citações (quando existirem)
+    //  - ul / ol                    → listas (quando existirem)
+    //  - div.ad-slot                → propagandas → IGNORAR
+    //
+    // Excluídos: .ad-slot, .p12TalkComments, .p12ArticleTags, .p12-banner
+
     const SKIP_REGEX = /ad-slot|p12TalkComments|p12ArticleTags|p12-banner|p12-lead-art/i;
 
     const isInsideSkipped = (el: Element): boolean => {
