@@ -66,8 +66,80 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       } catch { /* json malformado, ignora */ }
     });
 
+    // ── ANO DE PUBLICAÇÃO ───────────────────────────────────────────────────
+    // Prioridade: JSON-LD datePublished → meta article:published_time →
+    //             meta og:article:published_time → meta[name="date"] →
+    //             URL (padrão /YYYY-MM-DD- ou /YYYYMMDD)
+    // ── ANO DE PUBLICAÇÃO ───────────────────────────────────────────────────
+    // Prioridade: JSON-LD datePublished → meta article:published_time →
+    //             meta og:article:published_time → meta[name="date"] →
+    //             .p12Date time[datetime] → .p12Date textContent → URL
+    let publishYear: string = NOT_FOUND;
+
+    // 1) JSON-LD: campo datePublished ou dateCreated
+    // @ts-ignore-next-line
+    const ldDate = clean(ldArticle?.datePublished || ldArticle?.dateCreated);
+    if (ldDate) {
+      const m = ldDate.match(/(\d{4})/);
+      if (m) publishYear = m[1];
+    }
+
+    // 2) meta article:published_time (Open Graph / Facebook)
+    if (publishYear === NOT_FOUND) {
+      const metaPubTime = clean(
+        document.querySelector('meta[property="article:published_time"]')?.getAttribute('content') ||
+        document.querySelector('meta[name="article:published_time"]')?.getAttribute('content')
+      );
+      if (metaPubTime) {
+        const m = metaPubTime.match(/(\d{4})/);
+        if (m) publishYear = m[1];
+      }
+    }
+
+    // 3) meta og:article:published_time
+    if (publishYear === NOT_FOUND) {
+      const metaOgPub = clean(
+        document.querySelector('meta[property="og:article:published_time"]')?.getAttribute('content')
+      );
+      if (metaOgPub) {
+        const m = metaOgPub.match(/(\d{4})/);
+        if (m) publishYear = m[1];
+      }
+    }
+
+    // 4) meta[name="date"] / meta[name="pubdate"] / meta[name="DC.date"]
+    if (publishYear === NOT_FOUND) {
+      const metaDate = clean(
+        document.querySelector('meta[name="date"]')?.getAttribute('content') ||
+        document.querySelector('meta[name="pubdate"]')?.getAttribute('content') ||
+        document.querySelector('meta[name="DC.date"]')?.getAttribute('content')
+      );
+      if (metaDate) {
+        const m = metaDate.match(/(\d{4})/);
+        if (m) publishYear = m[1];
+      }
+    }
+
+    // 5) .p12Date — elemento nativo do P12
+    //    Prefere time[datetime] (ISO 8601, ex: "2024-12-30T03:44:31Z")
+    //    e cai no textContent como segurança (ex: "30 de diciembre de 2024 - 0:44")
+    if (publishYear === NOT_FOUND) {
+      const p12DateEl = document.querySelector('.p12Date time');
+      const p12Datetime = clean(p12DateEl?.getAttribute('datetime'));
+      const p12Text = clean(p12DateEl?.textContent || document.querySelector('.p12Date')?.textContent);
+      const raw = p12Datetime || p12Text;
+      if (raw) {
+        const m = raw.match(/(\d{4})/);
+        if (m) publishYear = m[1];
+      }
+    }
+
+    // 6) Fallback: extrai o ano diretamente da URL (padrão /YYYY-/)
+    if (publishYear === NOT_FOUND) {
+      const urlMatch = location.href.match(/\/(\d{4})[-\/]/);
+      if (urlMatch) publishYear = urlMatch[1];
+    }
     // ── TÍTULO ─────────────────────────────────────────────────────────────
-    // O P12 usa h1.p12Header dentro de .b-single-chain__children-stack
     const title =
       clean(document.querySelector('.b-single-chain__children-stack h1.p12Header')?.textContent) ||
       clean(document.querySelector('h1.p12Header')?.textContent) ||
@@ -76,45 +148,37 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       NOT_FOUND;
 
     // ── CHAPEAU (h2 = título da nota anterior na chain — contexto editorial)
-    // Nota: no P12, o h2 acima do h1 é o "chapeau" ou link de nota relacionada
     const chapeau =
       clean(document.querySelector('.b-single-chain__children-stack h2.p12Header')?.textContent) || '';
 
     // ── BAJADA / SUBTÍTULO (h3 = supertítulo/volanta/bajada) ───────────────
     const bajada =
-      clean(document.querySelector('.b-single-chain__children-stack h3.p12Header')?.textContent) ||
-      // clean(ldArticle?.description) ||
-      '';
+      clean(document.querySelector('.b-single-chain__children-stack h3.p12Header')?.textContent) || '';
 
     // ── EDITORIA ────────────────────────────────────────────────────────────
-    // Prioridade: breadcrumb (.p12Breadcrumb) → meta[p12:section] → URL
     let editoria: string = NOT_FOUND;
 
-    // Breadcrumb: links em ordem → pega o último que não seja "Portada"
     const breadcrumbLinks = Array.from(
       document.querySelectorAll('.p12Breadcrumb a')
     );
     const editoriaFromBreadcrumb = breadcrumbLinks
       .filter((a) => {
         const href = (a as HTMLAnchorElement).href;
-        // Exclui a home (termina em .ar/ ou .ar)
         return !href.match(/pagina12\.com\.ar\/?$/);
       })
       .map((a) => clean(a.textContent))
       .filter(Boolean)
-      .pop(); // último segmento = mais específico
+      .pop();
 
     if (editoriaFromBreadcrumb) {
       editoria = editoriaFromBreadcrumb;
     } else {
-      // Fallback 1: meta p12:section (slug)
       const metaP12Section = clean(
         document.querySelector('meta[name="p12:section"]')?.getAttribute('content')
       );
       if (metaP12Section) {
         editoria = metaP12Section;
       } else {
-        // Fallback 2: meta article:section
         const metaSection = clean(
           document.querySelector('meta[property="article:section"]')?.getAttribute('content') ||
           document.querySelector('meta[name="article:section"]')?.getAttribute('content')
@@ -124,17 +188,13 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     }
 
     // ── TAGS ────────────────────────────────────────────────────────────────
-    // Prioridade: .p12ArticleTags a (DOM, legível) → meta[p12:tag] → meta[keywords]
-    // Deduplicação case-insensitive para evitar repetir "OTBN" e "otbn"
-    const tagMap = new Map<string, string>(); // key=lowercase → value=versão preferida
+    const tagMap = new Map<string, string>();
 
-    // 1) DOM: "Temas en esta nota" — forma capitalizada, preferida
     document.querySelectorAll('.p12ArticleTags a').forEach((a) => {
       const t = clean(a.textContent);
       if (t && t.length < 80) tagMap.set(t.toLowerCase(), t);
     });
 
-    // 2) meta[name="p12:tag"] — slug separado por vírgulas
     const p12Tags = clean(
       document.querySelector('meta[name="p12:tag"]')?.getAttribute('content')
     );
@@ -144,7 +204,6 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       });
     }
 
-    // 3) meta[name="keywords"] — fallback adicional
     const kwMeta = clean(
       document.querySelector('meta[name="keywords"]')?.getAttribute('content')
     );
@@ -157,15 +216,6 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     const tags = [...tagMap.values()];
 
     // ── CONTEÚDO COMPLETO ───────────────────────────────────────────────────
-    // Estrutura de article.p12-article-body:
-    //  - p.c-paragraph              → parágrafos de texto
-    //  - h2.p12-article-body__h2   → intertítulos editoriais
-    //  - blockquote                 → citações (quando existirem)
-    //  - ul / ol                    → listas (quando existirem)
-    //  - div.ad-slot                → propagandas → IGNORAR
-    //
-    // Excluídos: .ad-slot, .p12TalkComments, .p12ArticleTags, .p12-banner
-
     const SKIP_REGEX = /ad-slot|p12TalkComments|p12ArticleTags|p12-banner|p12-lead-art/i;
 
     const isInsideSkipped = (el: Element): boolean => {
@@ -197,18 +247,15 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       Array.from(articleRoot.children).forEach((el) => {
         const cls = typeof el.className === 'string' ? el.className : '';
 
-        // Pular blocos de ruído
         if (SKIP_REGEX.test(cls)) return;
 
         const tag = el.tagName;
         let text = '';
 
         if (tag === 'P' && el.classList.contains('c-paragraph')) {
-          // Parágrafo principal
           text = clean(el.textContent);
 
         } else if ((tag === 'H2' || tag === 'H3') && cls.includes('p12-article-body')) {
-          // Intertítulo editorial
           const raw = clean(el.textContent);
           if (raw) text = `[${tag}] ${raw}`;
 
@@ -225,8 +272,6 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
           if (items.length) text = items.map((i) => `• ${i}`).join('\n');
 
         } else if (tag === 'DIV' && !SKIP_REGEX.test(cls)) {
-          // Divs genéricas sem classe de ruído: tenta extrair parágrafos internos
-          // (cobre possíveis variações do CMS em diferentes seções)
           el.querySelectorAll('p.c-paragraph').forEach((p) => {
             if (!isInsideSkipped(p)) addIfNew(clean(p.textContent));
           });
@@ -237,7 +282,6 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
     }
 
     // ── SEGUNDA PASSAGEM ────────────────────────────────────────────────────
-    // Varredura extra: garante que nenhum parágrafo dentro de sub-divs foi perdido
     if (articleRoot) {
       articleRoot.querySelectorAll('p.c-paragraph').forEach((p) => {
         if (!isInsideSkipped(p)) addIfNew(clean(p.textContent));
@@ -255,22 +299,21 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
       content: fullContent,
       contentBlocks: contentParts.length,
       url: location.href,
+      publishYear, // ── ANO: adicionado ao retorno
     };
   });
 
   // 6) Monta a saída em texto formatado
   const tagsStr = data.tags.length ? data.tags.join(', ') : '[NÃO ENCONTRADO]';
-  const chapeauLine = data.chapeau ? `Chapeau: ${data.chapeau}\n` : '';
-  const bajadaLine = data.bajada ? `Subtítulo: ${data.bajada}\n` : '';
+  const chapeauLine = data.chapeau ? `${data.chapeau}\n` : '';
+  const bajadaLine = data.bajada ? `${data.bajada}\n` : '';
 
   const output =
-    `Título: ${data.title}
-${chapeauLine}${bajadaLine}Editoria: ${data.editoria}
-Tags: ${tagsStr}
-URL: ${data.url}
+    `**** pais_ag jornal_pagina12 *ano_${data.publishYear}
+    
+    ${data.title}
+    ${chapeauLine}${bajadaLine}
 
-Notícia completa (${data.contentBlocks} blocos):
-${data.content}`;
-
+    ${data.content}`;
   return output;
 }

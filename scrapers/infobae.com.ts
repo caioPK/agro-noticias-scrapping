@@ -249,12 +249,12 @@ export default async function infobaeScraper(page: Page): Promise<string> {
 
   const output =
     `Título: ${data.title}
-${subBlock}Editoria: ${data.editoria}
-Tags: ${tagsStr}
-URL: ${data.url}
+    ${subBlock}Editoria: ${data.editoria}
+    Tags: ${tagsStr}
+    URL: ${data.url}
 
-Notícia completa (${data.contentBlocks} blocos):
-${data.content}`;
+    Notícia completa (${data.contentBlocks} blocos):
+    ${data.content}`;
 
   return output;
 }
