@@ -154,7 +154,11 @@ export default async function exampleScraper(page: Page): Promise<any> {
 
     console.log(textoMateria);
 
-    return { anoPublicacao, textoMateria };
+    // return { anoPublicacao, textoMateria };
+    return `
+      **** pais_br jornal_brasildefato * ano_${ anoPublicacao } \n\n
+      ${textoMateria}
+    `
   } catch (err) {
     console.error("Erro ao extrair a matéria:", err);
 

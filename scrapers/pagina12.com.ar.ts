@@ -318,10 +318,10 @@ export default async function pagina12Scraper(page: Page): Promise<string> {
   const bajadaLine = data.bajada ? `${data.bajada}\n` : '';
 
   const output =
-    `**** pais_ag jornal_pagina12 *ano_${data.publishYear}
+    `**** pais_ag jornal_pagina12 *ano_${data.publishYear}\n\n
     
-    ${data.title}
-    ${chapeauLine}${bajadaLine}
+    ${data.title}\n
+    ${chapeauLine}${bajadaLine}\n
 
     ${data.content}`;
   return output;

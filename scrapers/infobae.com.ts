@@ -257,17 +257,15 @@ export default async function infobaeScraper(page: Page): Promise<string> {
 
   // 6) Monta a saída em texto formatado
   const tagsStr = data.tags.length ? data.tags.join(', ') : '[NÃO ENCONTRADO]';
-  const subBlock = data.subtitle ? `Subtítulo: ${data.subtitle}\n` : '';
+  const subBlock = data.subtitle ? `${data.subtitle}\n` : '\n';
 
   const output =
-    `Título: ${data.title}
-${subBlock}Ano de publicação: ${data.publicationYear}
-Editoria: ${data.editoria}
-Tags: ${tagsStr}
-URL: ${data.url}
-
-Notícia completa (${data.contentBlocks} blocos):
-${data.content}`;
+    `**** pais_ag jornal_infobae *ano_${data.publicationYear}\n\n
+    
+    ${data.title}\n
+    ${subBlock}
+    \n
+    ${data.content}`;
 
   return output;
 }
