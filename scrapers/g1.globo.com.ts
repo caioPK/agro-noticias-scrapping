@@ -61,9 +61,73 @@ export default async function g1Scraper(page: Page): Promise<string> {
       clean(document.querySelector('h2.content-head__subtitle')?.textContent) ||
       '';
 
+    // ---------- ANO DE PUBLICAÇÃO ----------
+    // Fontes em ordem de prioridade:
+    //  1) Segmento de 4 dígitos na URL (ex: /noticia/2024/11/25/...)
+    //  2) Texto da classe .content-publication-data__updated (ex: "25/11/2024")
+    //  3) Atributo datetime de <time> dentro de .content-publication-data__updated
+    //  4) Meta tag article:published_time
+    //  5) JSON-LD datePublished
+    let publicationYear: string = NOT_FOUND;
+
+    // 1) URL — procura o primeiro segmento que seja um ano válido (4 dígitos, >= 2000)
+    const urlYearMatch = location.pathname.match(/\/(\d{4})\//);
+    if (urlYearMatch && parseInt(urlYearMatch[1], 10) >= 2000) {
+      publicationYear = urlYearMatch[1];
+    }
+
+    // 2) Classe .content-publication-data__updated — tenta extrair o ano do texto
+    if (publicationYear === NOT_FOUND) {
+      const pubDataEl = document.querySelector('.content-publication-data__updated');
+      if (pubDataEl) {
+        // Tenta primeiro o atributo datetime de um <time> filho
+        const timeEl = pubDataEl.querySelector('time');
+        const datetime = timeEl?.getAttribute('datetime') || timeEl?.getAttribute('content') || '';
+        const datetimeYearMatch = datetime.match(/(\d{4})/);
+        if (datetimeYearMatch) {
+          publicationYear = datetimeYearMatch[1];
+        } else {
+          // Fallback: extrai ano do texto visível (formatos: dd/mm/aaaa, aaaa-mm-dd, "25 nov. 2024" etc.)
+          const pubText = clean(pubDataEl.textContent);
+          const textYearMatch = pubText.match(/\b(20\d{2})\b/);
+          if (textYearMatch) publicationYear = textYearMatch[1];
+        }
+      }
+    }
+
+    // 3) Meta tag article:published_time
+    if (publicationYear === NOT_FOUND) {
+      const metaPublished = document.querySelector(
+        'meta[property="article:published_time"]'
+      )?.getAttribute('content');
+      if (metaPublished) {
+        const metaYearMatch = metaPublished.match(/^(\d{4})/);
+        if (metaYearMatch) publicationYear = metaYearMatch[1];
+      }
+    }
+
+    // 4) JSON-LD datePublished
+    if (publicationYear === NOT_FOUND) {
+      document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+        if (publicationYear !== NOT_FOUND) return;
+        try {
+          const parsed = JSON.parse(s.textContent || '');
+          const list = Array.isArray(parsed) ? parsed : [parsed];
+          list.forEach((obj) => {
+            if (publicationYear !== NOT_FOUND) return;
+            const dateStr: string | undefined = obj?.datePublished || obj?.dateCreated;
+            if (dateStr) {
+              const jsonYearMatch = String(dateStr).match(/^(\d{4})/);
+              if (jsonYearMatch) publicationYear = jsonYearMatch[1];
+            }
+          });
+        } catch { /* ignora json malformado */ }
+      });
+    }
+
     // ---------- EDITORIA ----------
     // Fontes em ordem de prioridade:
-    //  1) JSON-LD (articleSection) — pode listar Veículo (G1) e Editoria (Jornal Nacional)
+    //  1) JSON-LD (articleSection)
     //  2) Link da editoria no header
     //  3) Meta tags
     //  4) Segmento da URL
@@ -84,7 +148,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
     });
 
     if (jsonLdSections.length) {
-      // Remove duplicatas e prioriza nomes diferentes de "G1" (veículo)
       const unique = [...new Set(jsonLdSections)];
       const specific = unique.filter((s) => s.toLowerCase() !== 'g1');
       editoria = (specific.length ? specific : unique).join(' / ');
@@ -98,7 +161,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
       if (headerEditoria) {
         editoria = headerEditoria;
       } else {
-        // Fallback: primeiro segmento útil da URL
         const segs = location.pathname.split('/').filter(Boolean);
         const first = segs.find((s) => !['noticia', 'videos', 'foto'].includes(s) && !/^\d+$/.test(s) && !s.endsWith('.ghtml'));
         if (first) editoria = first.replace(/-/g, ' ');
@@ -106,11 +168,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
     }
 
     // ---------- TAGS ----------
-    // Fontes:
-    //  1) <ul class="entities__list"> (tags semânticas renderizadas pelo G1)
-    //  2) <meta property="article:tag"> múltiplas
-    //  3) <meta name="keywords">
-    //  4) Segmentos da URL (excluindo data, "noticia", arquivo .ghtml)
     const tagSet = new Set<string>();
 
     document
@@ -130,10 +187,9 @@ export default async function g1Scraper(page: Page): Promise<string> {
       keywords.split(/[,;]/).map((k) => clean(k)).filter(Boolean).forEach((k) => tagSet.add(k));
     }
 
-    // URL — segmentos descritivos (ignora /noticia/AAAA/MM/DD/ e arquivo final)
     const urlSegments = location.pathname.split('/').filter(Boolean).filter((s) => {
       if (s === 'noticia') return false;
-      if (/^\d{4}$/.test(s) || /^\d{2}$/.test(s)) return false; // ano/mês/dia
+      if (/^\d{4}$/.test(s) || /^\d{2}$/.test(s)) return false;
       if (s.endsWith('.ghtml')) return false;
       return true;
     });
@@ -142,15 +198,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
     const tags = [...tagSet];
 
     // ---------- CONTEÚDO COMPLETO DA NOTÍCIA ----------
-    // O corpo do G1 fica em ".mc-article-body article" e é composto por blocos:
-    //  - .content-text__container (parágrafos)
-    //  - .content-intertitle / h2 / h3 (intertítulos)
-    //  - blockquote (citações em destaque)
-    //  - ul/ol dentro do article
-    //
-    // Excluímos: propagandas, comentários, newsletter, leia mais, créditos de foto,
-    // GloboPop, blocos de "vídeos relacionados" e links promocionais.
-
     const SKIP_REGEX = /(\b|_)(ads|publicidade|banner|newsletter|comment|related|recomenda|leia[-_ ]?mais|globopop|signature|credito|caption|tagged-content|chamada|widgets?)\b/i;
 
     const isInsideSkipped = (el: Element): boolean => {
@@ -179,7 +226,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
       blocks.forEach((el) => {
         if (isInsideSkipped(el)) return;
 
-        // Se for ul/ol, transforma em texto com bullets
         let text = '';
         if (el.tagName === 'UL' || el.tagName === 'OL') {
           const items = Array.from(el.querySelectorAll(':scope > li'))
@@ -191,7 +237,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
         }
 
         if (!text) return;
-        // Remove ruídos comuns
         if (/^(VEJA TAMBÉM|LEIA MAIS|VEJA MAIS|ASSISTA|COMPARTILHE)/i.test(text)) return;
         if (text.length < 2) return;
         if (seen.has(text)) return;
@@ -202,7 +247,6 @@ export default async function g1Scraper(page: Page): Promise<string> {
     }
 
     // ---------- SEGUNDA PASSAGEM (verificação) ----------
-    // Garantir que pegamos todos os parágrafos de conteúdo, mesmo que estejam fora do <article>
     if (articleRoot) {
       articleRoot.querySelectorAll('.content-text__container').forEach((p) => {
         if (isInsideSkipped(p)) return;
@@ -220,6 +264,7 @@ export default async function g1Scraper(page: Page): Promise<string> {
       title,
       subtitle,
       editoria,
+      publicationYear,
       tags,
       content: fullContent,
       contentBlocks: contentParts.length,
@@ -234,6 +279,7 @@ export default async function g1Scraper(page: Page): Promise<string> {
   const output =
     `Título: ${data.title}
 ${subtitleBlock}Editoria: ${data.editoria}
+Ano de publicação: ${data.publicationYear}
 Tags: ${tagsStr}
 URL: ${data.url}
 
