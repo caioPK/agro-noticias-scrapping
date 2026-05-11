@@ -11,7 +11,9 @@ import { Page } from 'puppeteer';
  *  - Segunda passagem para garantir que nenhum parágrafo foi perdido
  *  - Campos ausentes retornam explicitamente "[NÃO ENCONTRADO]"
  */
+
 export default async function infobaeScraper(page: Page): Promise<string> {
+
   // 1) Aguarda o título — seletor principal do Infobae
   await page.waitForSelector('h1.article-headline, h1', { timeout: 15000 });
 
@@ -42,7 +44,9 @@ export default async function infobaeScraper(page: Page): Promise<string> {
 
   // 5) Extração no contexto da página
   const data = await page.evaluate(() => {
+
     const NOT_FOUND = '[NÃO ENCONTRADO]';
+
     const clean = (s: string | null | undefined) =>
       (s || '').replace(/\s+/g, ' ').trim();
 
@@ -75,10 +79,42 @@ export default async function infobaeScraper(page: Page): Promise<string> {
       } catch { /* json malformado, ignora */ }
     });
 
+    // ── ANO DA PUBLICAÇÃO ───────────────────────────────────────────────────
+    // Prioridade: .sharebar-article-date → URL → JSON-LD datePublished → meta[article:published_time]
+    let publicationYear: string = NOT_FOUND;
+
+    // 1. Tenta extrair do elemento .sharebar-article-date
+    const dateEl = document.querySelector('.sharebar-article-date');
+    if (dateEl) {
+      // Procura um padrão de 4 dígitos que represente um ano (ex: "2024")
+      const yearMatch = (dateEl.getAttribute('datetime') || dateEl.textContent || '').match(/\b(19|20)\d{2}\b/);
+      if (yearMatch) publicationYear = yearMatch[0];
+    }
+
+    // 2. Fallback: extrai da URL (ex: /2024/08/09/...)
+    if (publicationYear === NOT_FOUND) {
+      const urlYearMatch = location.pathname.match(/\/(19|20)\d{2}\//);
+      if (urlYearMatch) publicationYear = urlYearMatch[0].replace(/\//g, '');
+    }
+
+    // 3. Fallback: JSON-LD datePublished
+    if (publicationYear === NOT_FOUND && ldArticle?.datePublished) {
+      const ldYearMatch = String(ldArticle.datePublished).match(/\b(19|20)\d{2}\b/);
+      if (ldYearMatch) publicationYear = ldYearMatch[0];
+    }
+
+    // 4. Fallback: meta tag article:published_time
+    if (publicationYear === NOT_FOUND) {
+      const metaDate =
+        document.querySelector('meta[property="article:published_time"]')?.getAttribute('content') ||
+        document.querySelector('meta[name="article:published_time"]')?.getAttribute('content') || '';
+      const metaYearMatch = metaDate.match(/\b(19|20)\d{2}\b/);
+      if (metaYearMatch) publicationYear = metaYearMatch[0];
+    }
+
     // ── EDITORIA ────────────────────────────────────────────────────────────
     // Prioridade: JSON-LD articleSection → meta article:section → URL
     let editoria: string = NOT_FOUND;
-
     const ldSection = ldArticle?.articleSection;
     if (ldSection) {
       editoria = Array.isArray(ldSection) ? ldSection.join(' / ') : String(ldSection);
@@ -101,22 +137,18 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     }
 
     // ── TAGS ────────────────────────────────────────────────────────────────
-    // Prioridade: .article-tags links → meta[article:tag] → meta[name=keywords] → JSON-LD keywords
     const tagSet = new Set<string>();
 
-    // Tags no DOM (`.article-tags` é o container de "Temas Relacionados")
     document.querySelectorAll('.article-tags a').forEach((a) => {
       const t = clean(a.textContent);
       if (t && t.length < 80) tagSet.add(t);
     });
 
-    // meta[article:tag] (múltiplas)
     document.querySelectorAll('meta[property="article:tag"], meta[name="article:tag"]').forEach((m) => {
       const c = clean(m.getAttribute('content'));
       if (c) tagSet.add(c);
     });
 
-    // meta[keywords] / news_keywords
     const kwMeta =
       clean(document.querySelector('meta[name="keywords"]')?.getAttribute('content')) ||
       clean(document.querySelector('meta[name="news_keywords"]')?.getAttribute('content'));
@@ -124,7 +156,6 @@ export default async function infobaeScraper(page: Page): Promise<string> {
       kwMeta.split(',').map((k) => clean(k)).filter(Boolean).forEach((k) => tagSet.add(k));
     }
 
-    // JSON-LD keywords (fallback)
     if (ldArticle?.keywords && !tagSet.size) {
       String(ldArticle.keywords).split(',').map((k: string) => clean(k)).filter(Boolean).forEach((k: string) => tagSet.add(k));
     }
@@ -132,16 +163,6 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     const tags = [...tagSet];
 
     // ── CONTEÚDO COMPLETO ───────────────────────────────────────────────────
-    // Estrutura do Infobae dentro de .body-article:
-    //  - p.paragraph                     → parágrafos de texto
-    //  - H2/H3 com classe "headline"     → intertítulos editoriais
-    //  - BLOCKQUOTE                       → citações (excluindo "Te puede interesar")
-    //  - UL / OL                          → listas
-    //
-    // Excluímos: propagandas (.ad-wrapper, dfpAd), módulos de recomendação
-    // (.news-module), blocos de imagem (.visual__), botões de share
-    // (.second-saved-buttons), container de tags (.article-tags-container).
-
     const SKIP_REGEX = /ad-wrapper|dfpAd|publicidad|news-module|visual__|second-saved|article-tags|sponsored|recomend/i;
 
     const isInsideSkipped = (el: Element): boolean => {
@@ -154,7 +175,6 @@ export default async function infobaeScraper(page: Page): Promise<string> {
       return false;
     };
 
-    // Verifica se blockquote é "Te puede interesar" (link de recomendação)
     const isRecommendedLink = (el: Element): boolean =>
       /te (puede|interesa)/i.test(el.textContent || '');
 
@@ -177,39 +197,27 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     if (bodyArticle) {
       Array.from(bodyArticle.children).forEach((el) => {
         const cls = typeof el.className === 'string' ? el.className : '';
-
-        // Pular blocos de ruído
         if (SKIP_REGEX.test(cls)) return;
 
         const tag = el.tagName;
         let text = '';
 
         if (tag === 'P' && el.classList.contains('paragraph')) {
-          // Parágrafo principal
           text = clean(el.textContent);
-
         } else if ((tag === 'H2' || tag === 'H3') && cls.includes('headline')) {
-          // Intertítulo — mantém hierarquia com marcador
           const raw = clean(el.textContent);
           if (raw) text = `[${tag}] ${raw}`;
-
         } else if (tag === 'BLOCKQUOTE') {
-          // Citações reais (não "Te puede interesar")
           if (!isInsideSkipped(el) && !isRecommendedLink(el)) {
             const raw = clean(el.textContent);
             if (raw) text = `"${raw}"`;
           }
-
         } else if (tag === 'UL' || tag === 'OL') {
-          // Listas
           const items = Array.from(el.querySelectorAll(':scope > li'))
             .map((li) => clean(li.textContent))
             .filter(Boolean);
           if (items.length) text = items.map((i) => `• ${i}`).join('\n');
-
         } else {
-          // Para divs genéricas sem classe de ruído: tentar extrair parágrafos internos
-          // (cobre variações do CMS em diferentes editorias)
           const innerParas = el.querySelectorAll('p.paragraph');
           if (innerParas.length) {
             innerParas.forEach((p) => {
@@ -223,7 +231,6 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     }
 
     // ── SEGUNDA PASSAGEM ────────────────────────────────────────────────────
-    // Varredura extra para capturar parágrafos que possam estar em divs aninhadas
     if (bodyArticle) {
       bodyArticle.querySelectorAll('p.paragraph').forEach((p) => {
         if (!isInsideSkipped(p)) addIfNew(clean(p.textContent));
@@ -235,6 +242,7 @@ export default async function infobaeScraper(page: Page): Promise<string> {
     return {
       title,
       subtitle,
+      publicationYear, // ── ANO: novo campo retornado
       editoria,
       tags,
       content: fullContent,
@@ -249,12 +257,13 @@ export default async function infobaeScraper(page: Page): Promise<string> {
 
   const output =
     `Título: ${data.title}
-    ${subBlock}Editoria: ${data.editoria}
-    Tags: ${tagsStr}
-    URL: ${data.url}
+${subBlock}Ano de publicação: ${data.publicationYear}
+Editoria: ${data.editoria}
+Tags: ${tagsStr}
+URL: ${data.url}
 
-    Notícia completa (${data.contentBlocks} blocos):
-    ${data.content}`;
+Notícia completa (${data.contentBlocks} blocos):
+${data.content}`;
 
   return output;
 }
