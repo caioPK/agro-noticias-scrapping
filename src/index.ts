@@ -1,19 +1,35 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
+import * as path from 'path';
+import * as fs from 'fs';
 import { config } from './config';
 import { createDataSource } from './data-source';
 import { DataSource } from './types';
 import { extractDomain, loadScraper, listAvailableScrapers } from './scraper-loader';
+import {
+  listAvailableListCrawlers,
+  runListCrawler,
+  listResultFiles,
+} from './list-crawler-loader';
+import { ExcelDataSource } from './excel';
 
-/**
- * Delay helper para respeitar limites de taxa.
- */
+// @inquirer/prompts é ESM-only, precisa de import() dinâmico em CommonJS
+async function getInquirer() {
+  const mod = await import('@inquirer/prompts');
+  return { select: mod.select, confirm: mod.confirm };
+}
+
+// ─── Constantes ───────────────────────────────────────────────────────────────
+
+const RESULTS_LIST_DIR = path.resolve(__dirname, '..', 'results-list');
+
+// ─── Utilitários ──────────────────────────────────────────────────────────────
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Processa uma única URL: carrega o scraper do domínio, abre a página e extrai o texto.
- */
+// ─── Fase 2: Processar URLs (scraping de conteúdo) ────────────────────────────
+
 async function processUrl(
   browser: Browser,
   dataSource: DataSource,
@@ -72,16 +88,103 @@ async function processUrl(
   }
 }
 
-/**
- * Ponto de entrada principal do script de web scraping.
- */
-async function main(): Promise<void> {
-  console.log('═══════════════════════════════════════════════════');
-  console.log('  🕷️  Web Scraper — Puppeteer + Planilhas');
+// ─── FASE 1: Buscar lista de fontes ───────────────────────────────────────────
+
+async function runFase1(): Promise<void> {
+  console.log('\n═══════════════════════════════════════════════════');
+  console.log('  📋 FASE 1 — Buscar Lista de Fontes');
   console.log('═══════════════════════════════════════════════════\n');
 
-  // Cria a fonte de dados (Google Sheets ou Excel local)
-  const dataSource = createDataSource();
+  const crawlers = listAvailableListCrawlers();
+
+  if (crawlers.length === 0) {
+    console.log('❌ Nenhum list-crawler encontrado na pasta /list-scrappers.');
+    console.log('   Crie um arquivo crawler-<nome>.ts que exporte crawlerName e run().\n');
+    return;
+  }
+
+  // Apresenta opções: crawlers individuais + todos
+  const choices = [
+    ...crawlers.map(c => ({
+      name: `🕷️  ${c.name}  (${c.file})`,
+      value: c.file,
+    })),
+    { name: '🚀 Executar TODOS os crawlers', value: '__ALL__' },
+  ];
+
+  const { select } = await getInquirer();
+  const selected = await select({
+    message: 'Qual list-crawler deseja executar?',
+    choices,
+  });
+
+  // Garante que o diretório de output exista
+  if (!fs.existsSync(RESULTS_LIST_DIR)) {
+    fs.mkdirSync(RESULTS_LIST_DIR, { recursive: true });
+  }
+
+  if (selected === '__ALL__') {
+    console.log(`\n🚀 Executando TODOS os ${crawlers.length} list-crawlers...\n`);
+    for (const crawler of crawlers) {
+      console.log(`\n${'─'.repeat(60)}`);
+      console.log(`  Executando: ${crawler.name} (${crawler.file})`);
+      console.log(`${'─'.repeat(60)}\n`);
+      try {
+        await runListCrawler(crawler.file, RESULTS_LIST_DIR);
+      } catch (err: any) {
+        console.error(`❌ Erro no crawler ${crawler.name}: ${err.message}`);
+      }
+    }
+  } else {
+    await runListCrawler(selected, RESULTS_LIST_DIR);
+  }
+
+  console.log('\n✅ Fase 1 concluída! Resultados salvos em: results-list/\n');
+}
+
+// ─── FASE 2: Processar artigos (scraping de conteúdo) ─────────────────────────
+
+async function runFase2(): Promise<void> {
+  console.log('\n═══════════════════════════════════════════════════');
+  console.log('  🔍 FASE 2 — Processar Artigos');
+  console.log('═══════════════════════════════════════════════════\n');
+
+  // Monta a lista de fontes disponíveis
+  const resultFiles = listResultFiles(RESULTS_LIST_DIR)
+    .filter(f => f.file.endsWith('.xlsx'));
+
+  const choices: { name: string; value: string }[] = [
+    {
+      name: `📊 Planilha principal (${path.basename(config.excelFilePath)})`,
+      value: '__MAIN__',
+    },
+  ];
+
+  if (resultFiles.length > 0) {
+    choices.push(
+      ...resultFiles.map(f => ({
+        name: `📄 ${f.file}  (results-list)`,
+        value: f.fullPath,
+      }))
+    );
+  }
+
+  const { select } = await getInquirer();
+  const selectedFile = await select({
+    message: 'Qual arquivo de URLs deseja processar?',
+    choices,
+  });
+
+  let dataSource: DataSource;
+
+  if (selectedFile === '__MAIN__') {
+    // Usa a planilha principal configurada no .env
+    dataSource = createDataSource();
+  } else {
+    // Usa uma planilha da Fase 1
+    console.log(`📊 Usando arquivo: ${path.basename(selectedFile)}`);
+    dataSource = new ExcelDataSource(selectedFile);
+  }
 
   // Lista scrapers disponíveis
   const availableScrapers = listAvailableScrapers();
@@ -133,6 +236,60 @@ async function main(): Promise<void> {
   console.log('\n═══════════════════════════════════════════════════');
   console.log(`  ✅ Concluído! ${urls.length} URLs processadas.`);
   console.log('═══════════════════════════════════════════════════\n');
+}
+
+// ─── MENU PRINCIPAL ───────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  console.log('═══════════════════════════════════════════════════');
+  console.log('  🕷️  Web Scraper — Sistema de Coleta de Dados');
+  console.log('═══════════════════════════════════════════════════\n');
+
+  let running = true;
+
+  const { select, confirm } = await getInquirer();
+
+  while (running) {
+    const fase = await select({
+      message: '🎯 Escolha a fase a executar:',
+      choices: [
+        {
+          name: '📋  Fase 1 — Buscar lista de fontes (list-crawlers)',
+          value: 'fase1',
+        },
+        {
+          name: '🔍  Fase 2 — Processar artigos (scraping de conteúdo)',
+          value: 'fase2',
+        },
+        {
+          name: '🚪  Sair',
+          value: 'sair',
+        },
+      ],
+    });
+
+    switch (fase) {
+      case 'fase1':
+        await runFase1();
+        break;
+      case 'fase2':
+        await runFase2();
+        break;
+      case 'sair':
+        running = false;
+        break;
+    }
+
+    if (running) {
+      const continuar = await confirm({
+        message: 'Deseja executar outra fase?',
+        default: true,
+      });
+      if (!continuar) running = false;
+    }
+  }
+
+  console.log('\n👋 Até a próxima!\n');
 }
 
 // Executa e trata erros fatais

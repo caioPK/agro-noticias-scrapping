@@ -17,10 +17,12 @@
   "license": "ISC",
   "description": "Web scraper que lê URLs de uma Google Sheets, executa scrapers customizados por domínio e escreve os resultados de volta na planilha.",
   "dependencies": {
+    "@inquirer/prompts": "^8.4.3",
     "@types/node": "^25.6.0",
     "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "googleapis": "^171.4.0",
+    "inquirer": "^9.3.8",
     "puppeteer": "^24.41.0",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"

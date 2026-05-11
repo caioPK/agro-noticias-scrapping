@@ -25,8 +25,8 @@ export class ExcelDataSource implements DataSource {
   private workbook: ExcelJS.Workbook | null = null;
   private filePath: string;
 
-  constructor() {
-    this.filePath = config.excelFilePath;
+  constructor(customFilePath?: string) {
+    this.filePath = customFilePath || config.excelFilePath;
   }
 
   /**
