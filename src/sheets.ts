@@ -109,4 +109,43 @@ export class GoogleSheetsDataSource implements DataSource {
 
     console.log(`  ❌ Erro escrito na célula ${cell}`);
   }
+
+  async readExportData(): Promise<{ row: number; url: string; content: string }[]> {
+    const sheets = await getSheetsClient();
+
+    // Fetch both URL and OUTPUT columns. It's usually better to fetch the whole row range between them.
+    // Assuming URL_COLUMN comes before OUTPUT_COLUMN or vice-versa, we can fetch A:Z and extract indices.
+    // Or we can make two separate requests, but let's fetch a wide range to be safe.
+    // To make it simple, we fetch URL_COLUMN and OUTPUT_COLUMN separately or together.
+    // Since we don't know the exact order of columns, let's fetch them in two requests.
+    const urlRange = `${config.sheetName}!${config.urlColumn}${config.startRow}:${config.urlColumn}`;
+    const outputRange = `${config.sheetName}!${config.outputColumn}${config.startRow}:${config.outputColumn}`;
+
+    const [urlResponse, outputResponse] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId: config.spreadsheetId, range: urlRange }),
+      sheets.spreadsheets.values.get({ spreadsheetId: config.spreadsheetId, range: outputRange })
+    ]);
+
+    const urlRows = urlResponse.data.values || [];
+    const outputRows = outputResponse.data.values || [];
+    const results: { row: number; url: string; content: string }[] = [];
+
+    const maxLen = Math.max(urlRows.length, outputRows.length);
+
+    for (let i = 0; i < maxLen; i++) {
+      const url = urlRows[i]?.[0]?.toString().trim() || '';
+      const content = outputRows[i]?.[0]?.toString().trim() || '';
+
+      if (url) {
+        results.push({
+          row: config.startRow + i,
+          url,
+          content
+        });
+      }
+    }
+
+    console.log(`📋 ${results.length} registros (URLs + Conteúdo) carregados do Google Sheets para exportação.`);
+    return results;
+  }
 }

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.iramuteq.org)",
+      "WebFetch(domain:www.protocols.io)",
+      "PowerShell(ls -Path \"C:\\\\Users\\\\Caio DEV\\\\Desktop\\\\DEV\\\\OUTROS\\\\TESTES\\\\web-scrap\" | Where-Object { ! $_.PSIsContainer })",
+      "WebFetch(domain:metars.web.uniroma1.it)",
+      "PowerShell(\\(ls \"C:\\\\Users\\\\Caio DEV\\\\Desktop\\\\DEV\\\\OUTROS\\\\TESTES\\\\web-scrap\\\\results-list\"\\).Count)",
+      "WebFetch(domain:juba.github.io)",
+      "WebFetch(domain:edutechwiki.unige.ch)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Caio DEV\\\\Desktop\\\\DEV\\\\OUTROS\\\\TESTES\\\\web-scrap\" -Directory | Where-Object { $_.Name -notmatch 'node_modules|\\\\.git|dist' } | Select-Object -ExpandProperty Name)"
+    ]
+  }
+}

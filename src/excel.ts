@@ -130,4 +130,41 @@ export class ExcelDataSource implements DataSource {
 
     console.log(`  ❌ Erro escrito na célula ${config.outputColumn}${row}`);
   }
+
+  async readExportData(): Promise<{ row: number; url: string; content: string }[]> {
+    const worksheet = await this.getWorksheet();
+    const urlColNumber = columnLetterToNumber(config.urlColumn.toUpperCase());
+    const outputColNumber = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const results: { row: number; url: string; content: string }[] = [];
+
+    const lastRow = worksheet.rowCount;
+
+    for (let rowNum = config.startRow; rowNum <= lastRow; rowNum++) {
+      const urlCell = worksheet.getCell(rowNum, urlColNumber);
+      const urlValue = urlCell.value;
+
+      let url = '';
+      if (urlValue !== null && urlValue !== undefined) {
+        if (typeof urlValue === 'object' && 'hyperlink' in (urlValue as any)) {
+          url = ((urlValue as any).hyperlink || (urlValue as any).text || '').toString().trim();
+        } else if (typeof urlValue === 'object' && 'text' in (urlValue as any)) {
+          url = (urlValue as any).text.toString().trim();
+        } else {
+          url = urlValue.toString().trim();
+        }
+      }
+
+      url = url.replace(/^'|'$/g, '');
+
+      const outputCell = worksheet.getCell(rowNum, outputColNumber);
+      const content = outputCell.value ? outputCell.value.toString().trim() : '';
+
+      if (url) {
+        results.push({ row: rowNum, url, content });
+      }
+    }
+
+    console.log(`📋 ${results.length} registros (URLs + Conteúdo) carregados para exportação.`);
+    return results;
+  }
 }

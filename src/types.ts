@@ -36,4 +36,7 @@ export interface DataSource {
 
   /** Escreve uma mensagem de erro na célula de output correspondente. */
   writeError(row: number, error: string): Promise<void>;
+
+  /** Lê os dados (URL e Conteúdo) da planilha para exportação (ex: Fase 3). */
+  readExportData(): Promise<{ row: number; url: string; content: string }[]>;
 }

@@ -11,7 +11,7 @@ import {
   listResultFiles,
 } from './list-crawler-loader';
 import { ExcelDataSource } from './excel';
-
+import { sanitizeForIramuteq, buildCorpusLine } from './iramuteq-sanitizer';
 // @inquirer/prompts é ESM-only, precisa de import() dinâmico em CommonJS
 async function getInquirer() {
   const mod = await import('@inquirer/prompts');
@@ -240,6 +240,97 @@ async function runFase2(): Promise<void> {
   console.log('═══════════════════════════════════════════════════\n');
 }
 
+// ─── FASE 3: Exportar para Iramuteq ───────────────────────────────────────────
+
+async function runFase3(): Promise<void> {
+  console.log('\n═══════════════════════════════════════════════════');
+  console.log('  📑 FASE 3 — Exportar para Iramuteq');
+  console.log('═══════════════════════════════════════════════════\n');
+
+  const resultFiles = listResultFiles(RESULTS_LIST_DIR)
+    .filter(f => f.file.endsWith('.xlsx'));
+
+  const choices: { name: string; value: string }[] = [
+    {
+      name: `📊 Planilha principal (${path.basename(config.excelFilePath)})`,
+      value: '__MAIN__',
+    },
+  ];
+
+  if (resultFiles.length > 0) {
+    choices.push(
+      ...resultFiles.map(f => ({
+        name: `📄 ${f.file}  (results-list)`,
+        value: f.fullPath,
+      }))
+    );
+  }
+
+  const { select } = await getInquirer();
+  const selectedFile = await select({
+    message: 'Qual arquivo deseja exportar?',
+    choices,
+  });
+
+  let dataSource: DataSource;
+  if (selectedFile === '__MAIN__') {
+    dataSource = createDataSource();
+  } else {
+    console.log(`📊 Usando arquivo: ${path.basename(selectedFile)}`);
+    dataSource = new ExcelDataSource(selectedFile);
+  }
+
+  const data = await dataSource.readExportData();
+
+  if (data.length === 0) {
+    console.log('ℹ️  Nenhum dado encontrado para exportação.');
+    return;
+  }
+
+  console.log('⚙️  Processando e higienizando textos...');
+  
+  const corpusLines: string[] = [];
+  let exportados = 0;
+
+  for (const { row, url, content } of data) {
+    if (!content || content.startsWith('[ERRO]') || content.startsWith('[VAZIO]')) {
+      continue;
+    }
+
+    const header = buildCorpusLine(content);
+    const sanitizedText = sanitizeForIramuteq(content);
+    
+    // Iramuteq exige que seja:
+    // **** *var1 *var2
+    // texto texto texto
+    corpusLines.push(header);
+    corpusLines.push(sanitizedText);
+    corpusLines.push(''); // Linha em branco extra
+    exportados++;
+  }
+
+  if (exportados === 0) {
+    console.log('⚠️  Nenhum texto válido encontrado para exportação (todos vazios ou com erro).');
+    return;
+  }
+
+  // Garante que o diretório de output exista
+  if (!fs.existsSync(RESULTS_LIST_DIR)) {
+    fs.mkdirSync(RESULTS_LIST_DIR, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '').substring(0, 15);
+  const outPath = path.join(RESULTS_LIST_DIR, `iramuteq_corpus_${timestamp}.txt`);
+
+  fs.writeFileSync(outPath, corpusLines.join('\n'), 'utf-8');
+
+  console.log('\n═══════════════════════════════════════════════════');
+  console.log(`  ✅ Exportação concluída!`);
+  console.log(`  📄 Arquivo gerado: ${outPath}`);
+  console.log(`  📝 Total de documentos exportados: ${exportados}`);
+  console.log('═══════════════════════════════════════════════════\n');
+}
+
 // ─── MENU PRINCIPAL ───────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -264,6 +355,10 @@ async function main(): Promise<void> {
           value: 'fase2',
         },
         {
+          name: '📑  Fase 3 — Exportar para Iramuteq (.txt)',
+          value: 'fase3',
+        },
+        {
           name: '🚪  Sair',
           value: 'sair',
         },
@@ -276,6 +371,9 @@ async function main(): Promise<void> {
         break;
       case 'fase2':
         await runFase2();
+        break;
+      case 'fase3':
+        await runFase3();
         break;
       case 'sair':
         running = false;
