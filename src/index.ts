@@ -217,8 +217,8 @@ async function runFase2(): Promise<void> {
   });
 
   try {
-    const total = 5;
-    // const total = urls.length;
+    // const total = 5;
+    const total = urls.length;
     for (let i = 0; i < total; i++) {
       const { row, url } = urls[i];
 
