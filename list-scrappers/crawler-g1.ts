@@ -9,11 +9,18 @@ import ExcelJS from 'exceljs';
 
 // ─── Configuração ──────────────────────────────────────────────────────────────
 
-const SEARCH_URL = 'https://g1.globo.com/busca/?q=Agroneg%C3%B3cio&species=noticias';
-const DELAY_BETWEEN_CLICKS = 2500;
-const DELAY_AFTER_CLICK = 3000;
+const SEARCH_URL = 'https://g1.globo.com/busca/?q=Agroneg%C3%B3cio&species=noticias&from=2022-01-01T03%3A00%3A00.000Z&to=2025-01-01T02%3A59%3A59.999Z';
+const DELAY_BETWEEN_CLICKS = 5000;
+const DELAY_AFTER_CLICK = 8000;
+const WAIT_NEW_CARDS_TIMEOUT = 20_000; // espera cards crescerem após clique
+const RETRIES_ON_STALL = 2;            // re-clica antes de desistir se nada carregar
+const MAX_ITEMS = 0;                 // limite de itens a capturar (teste); 0 = sem limite
 const MAX_CLICKS = 500;
 const NAV_TIMEOUT = 30_000;
+
+// Range de datas aceito (inclusivo)
+const DATE_MIN = new Date(2022, 0, 1);   // 01/01/2022
+const DATE_MAX = new Date(2024, 11, 31); // 31/12/2024
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -31,6 +38,28 @@ export const crawlerName = 'G1 Globo';
 // ─── Utilitários ───────────────────────────────────────────────────────────────
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+
+// Converte "DD/MM/YYYY" em Date. Retorna null se formato inválido.
+function parseData(data: string): Date | null {
+  const m = data.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return null;
+  const dia = Number(m[1]);
+  const mes = Number(m[2]);
+  const ano = Number(m[3]);
+  const d = new Date(ano, mes - 1, dia);
+  // Valida (rejeita 32/13/etc)
+  if (d.getFullYear() !== ano || d.getMonth() !== mes - 1 || d.getDate() !== dia) {
+    return null;
+  }
+  return d;
+}
+
+// True se data string está dentro do range [DATE_MIN, DATE_MAX].
+function dentroDoRange(data: string): boolean {
+  const d = parseData(data);
+  if (!d) return false;
+  return d >= DATE_MIN && d <= DATE_MAX;
+}
 
 function saveJson(results: Artigo[], outputDir: string): void {
   const jsonPath = path.join(outputDir, 'g1.json');
@@ -69,11 +98,12 @@ function extractAllCards(): Artigo[] {
     const preview = descEl ? descEl.textContent!.trim() : '[PREVIEW NÃO ENCONTRADO]';
     const link = linkEl ? linkEl.href : '[LINK NÃO ENCONTRADO]';
 
+    // Data vem da tag <span> dentro de .widget--info__meta (ex: "05/12/2024 19:04")
     let data = '[DATA NÃO ENCONTRADA]';
-    if (link !== '[LINK NÃO ENCONTRADO]') {
-      const match = link.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
-      if (match) data = `${match[3]}/${match[2]}/${match[1]}`;
-    }
+    const metaEl = card.querySelector('.widget--info__meta span') || card.querySelector('.widget--info__meta');
+    const metaText = metaEl ? metaEl.textContent!.trim() : '';
+    const match = metaText.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (match) data = `${match[1]}/${match[2]}/${match[3]}`;
 
     results.push({ titulo, preview, link, data });
   });
@@ -94,6 +124,12 @@ export async function run(outputDir: string): Promise<void> {
   });
 
   const page: Page = await browser.newPage();
+
+  // Listeners de diagnóstico: capturam crash/erro da aba e desconexão do browser
+  page.on('error', (err: unknown) => console.error('🧨 page crash (target closed):', err));
+  page.on('pageerror', (err: unknown) => console.error('🧨 erro JS na página:', (err as Error)?.message ?? err));
+  browser.on('disconnected', () => console.error('🧨 browser desconectou (crash/OOM?)'));
+
   page.setDefaultNavigationTimeout(NAV_TIMEOUT);
   await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -131,25 +167,47 @@ export async function run(outputDir: string): Promise<void> {
         return document.querySelectorAll('li.widget--card.widget--info').length;
       });
 
+      if (MAX_ITEMS > 0 && previousCount >= MAX_ITEMS) {
+        console.log(`🛑 Limite de ${MAX_ITEMS} itens atingido (${previousCount} carregados). Parando paginação.`);
+        break;
+      }
+
       console.log(`📄 Cards carregados: ${previousCount} | Clicando em "Veja mais" (${clickCount + 1})...`);
 
-      await page.evaluate(() => {
-        const btn = document.querySelector<HTMLElement>('button.pagination__load-more');
-        btn?.click();
-      });
+      // Tenta clicar e aguardar novos cards; re-tenta se travar (possível rate-limit).
+      let carregou = false;
+      for (let tentativa = 0; tentativa <= RETRIES_ON_STALL; tentativa++) {
+        if (tentativa > 0) {
+          console.log(`   🔁 Nenhum card novo. Re-tentando clique (${tentativa}/${RETRIES_ON_STALL}) após pausa...`);
+          await sleep(DELAY_AFTER_CLICK); // pausa extra pra aliviar possível bloqueio
+        }
+
+        // Scroll até o botão e clica (garante que está visível/ativo)
+        await page.evaluate(() => {
+          const btn = document.querySelector<HTMLElement>('button.pagination__load-more');
+          btn?.scrollIntoView({ block: 'center' });
+          btn?.click();
+        });
+
+        try {
+          await page.waitForFunction(
+            (prevCount: number) => {
+              return document.querySelectorAll('li.widget--card.widget--info').length > prevCount;
+            },
+            { timeout: WAIT_NEW_CARDS_TIMEOUT },
+            previousCount
+          );
+          carregou = true;
+          break;
+        } catch {
+          // stall — loop tenta de novo se ainda houver tentativas
+        }
+      }
+
       clickCount++;
 
-      // Aguarda novos cards
-      try {
-        await page.waitForFunction(
-          (prevCount: number) => {
-            return document.querySelectorAll('li.widget--card.widget--info').length > prevCount;
-          },
-          { timeout: DELAY_AFTER_CLICK + 5000 },
-          previousCount
-        );
-      } catch {
-        console.log(`⚠️  Nenhum card novo carregou após o clique ${clickCount}. Encerrando paginação.`);
+      if (!carregou) {
+        console.log(`⚠️  Nenhum card novo após ${RETRIES_ON_STALL + 1} tentativas no clique ${clickCount}. Encerrando paginação.`);
         break;
       }
 
@@ -167,9 +225,30 @@ export async function run(outputDir: string): Promise<void> {
 
     // Extrai todos os cards
     console.log('\n🔍 Extraindo todos os cards...');
-    const results = await page.evaluate(extractAllCards);
+    const rawFull = await page.evaluate(extractAllCards);
+    const raw = MAX_ITEMS > 0 ? rawFull.slice(0, MAX_ITEMS) : rawFull;
 
-    console.log(`\n✅ Extração concluída! Total de matérias: ${results.length}`);
+    if (MAX_ITEMS > 0 && rawFull.length > MAX_ITEMS) {
+      console.log(`✂️  ${rawFull.length} cards extraídos, cortando para ${MAX_ITEMS} (limite de teste).`);
+    }
+
+    // Mostra a data encontrada em cada card
+    console.log('\n🗓️  Datas encontradas por card:');
+    raw.forEach((a, i) => {
+      const marca = dentroDoRange(a.data) ? '✅' : '🚫';
+      console.log(`   ${marca} [${i + 1}] ${a.data}`);
+      // if (a.data === '[DATA NÃO ENCONTRADA]') {
+      //   console.log(`      🔗 link sem data: ${a.link}`);
+      // }
+    });
+
+    // Filtra por range de datas [01/01/2022, 31/12/2024]
+    const results = raw.filter(a => dentroDoRange(a.data));
+    const foraDoRange = raw.length - results.length;
+
+    console.log(`\n✅ Extração concluída! Total bruto: ${raw.length}`);
+    console.log(`🗓️  Fora do range (01/01/2022–31/12/2024): ${foraDoRange} itens descartados`);
+    console.log(`📥 Dentro do range: ${results.length} matérias`);
 
     // Salva resultados
     saveJson(results, outputDir);
@@ -200,6 +279,17 @@ function getJsonCount(outputDir: string): number {
 
 // Permite execução direta: npx ts-node list-scrappers/crawler-g1.ts
 if (require.main === module) {
+  // Captura mortes silenciosas (rejeições/erros não tratados que matam o processo)
+  process.on('unhandledRejection', (reason) => {
+    console.error('🧨 unhandledRejection:', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('🧨 uncaughtException:', err);
+  });
+  process.on('exit', (code) => {
+    console.error(`🚪 process.exit chamado com código ${code}`);
+  });
+
   const outputDir = path.resolve(__dirname, '..', 'results-list');
   run(outputDir).catch(err => {
     console.error('💥 Erro fatal:', err);

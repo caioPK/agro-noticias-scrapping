@@ -19,6 +19,10 @@ const NAV_TIMEOUT_MS = 30000;
 const MAX_PAGES_SAFETY = 500;
 const NOT_FOUND = '[não encontrado]';
 
+// Range de datas aceito (inclusivo)
+const DATE_MIN = new Date(2022, 0, 1);   // 01/01/2022
+const DATE_MAX = new Date(2024, 11, 31, 23, 59, 59); // 31/12/2024
+
 // ─── Tipos ────────────────────────────────────────────────────
 
 interface Artigo {
@@ -37,6 +41,15 @@ export const crawlerName = 'Página 12';
 // ─── Utilitários ──────────────────────────────────────────────
 
 const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
+
+// True se a data (ISO datetime ou texto) está dentro do range [DATE_MIN, DATE_MAX].
+// Data inválida/ausente → false (descarta).
+function dentroDoRange(data: string): boolean {
+  if (!data || data === NOT_FOUND) return false;
+  const d = new Date(data);
+  if (isNaN(d.getTime())) return false;
+  return d >= DATE_MIN && d <= DATE_MAX;
+}
 
 function buildUrl(page: number): string {
   const params = new URLSearchParams({
@@ -120,6 +133,7 @@ export async function run(outputDir: string): Promise<void> {
 
   const allResults: Artigo[] = [];
   let pageNum = 0;
+  let totalForaDoRange = 0;
 
   try {
     while (pageNum < MAX_PAGES_SAFETY) {
@@ -143,14 +157,24 @@ export async function run(outputDir: string): Promise<void> {
       }
 
       const { cards, hasNext } = await page.evaluate(extractCards);
-      console.log(`   ✅ ${cards.length} resultados extraídos. Próxima página? ${hasNext}`);
+
+      // Filtra por range de datas [01/01/2022, 31/12/2024]
+      const dentro = cards.filter(c => dentroDoRange(c.data));
+      const fora = cards.length - dentro.length;
+      totalForaDoRange += fora;
+
+      console.log(
+        `   ✅ ${dentro.length} dentro do range | ` +
+        `🚨 ${fora} fora do range | ` +
+        `Próxima página? ${hasNext}`
+      );
 
       if (cards.length === 0) {
         console.log('🏁 Página vazia. Encerrando.');
         break;
       }
 
-      allResults.push(...cards);
+      allResults.push(...dentro);
       saveJson(allResults, outputDir);
       await saveExcel(allResults, outputDir);
 
@@ -168,6 +192,7 @@ export async function run(outputDir: string): Promise<void> {
     await browser.close();
     console.log(`\n════════════════════════════════════════════`);
     console.log(`📊 TOTAL: ${allResults.length} matérias coletadas`);
+    console.log(`🗓️  Fora do range (01/01/2022–31/12/2024): ${totalForaDoRange} itens descartados`);
     console.log(`💾 Arquivos salvos em: ${outputDir}`);
     console.log(`════════════════════════════════════════════`);
   }

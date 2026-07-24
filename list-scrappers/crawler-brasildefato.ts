@@ -129,6 +129,7 @@ export async function run(outputDir: string): Promise<void> {
   let currentUrl: string | null = START_URL;
   let pageCount = 0;
   let foundOutOfRange = false;
+  let totalForaDoRange = 0;
 
   try {
     while (currentUrl && pageCount < MAX_PAGES) {
@@ -158,6 +159,8 @@ export async function run(outputDir: string): Promise<void> {
 
       const { dados, foraDaFaixa, proximaUrl } =
         await page.evaluate(extractPage, ANO_MIN, ANO_MAX);
+
+      totalForaDoRange += foraDaFaixa.length;
 
       console.log(
         `   ✅ ${dados.length} dentro do range | ` +
@@ -202,6 +205,7 @@ export async function run(outputDir: string): Promise<void> {
     await browser.close();
     console.log('\n════════════════════════════════════════════');
     console.log(`📊 TOTAL coletado: ${allResults.length} artigos`);
+    console.log(`🗓️  Fora do range (${ANO_MIN}–${ANO_MAX}): ${totalForaDoRange} itens descartados`);
     if (foundOutOfRange) {
       console.log(`ℹ️  Parou fora do range ${ANO_MIN}–${ANO_MAX}`);
     }
