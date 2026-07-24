@@ -98,12 +98,19 @@ function extractAllCards(): Artigo[] {
     const preview = descEl ? descEl.textContent!.trim() : '[PREVIEW NÃO ENCONTRADO]';
     const link = linkEl ? linkEl.href : '[LINK NÃO ENCONTRADO]';
 
-    // Data vem da tag <span> dentro de .widget--info__meta (ex: "05/12/2024 19:04")
+    // Data: 1º tenta pela URL (/AAAA/MM/DD/); se falhar, cai pra tag <span> em .widget--info__meta
     let data = '[DATA NÃO ENCONTRADA]';
-    const metaEl = card.querySelector('.widget--info__meta span') || card.querySelector('.widget--info__meta');
-    const metaText = metaEl ? metaEl.textContent!.trim() : '';
-    const match = metaText.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-    if (match) data = `${match[1]}/${match[2]}/${match[3]}`;
+    if (link !== '[LINK NÃO ENCONTRADO]') {
+      const urlMatch = link.match(/\/(\d{4})\/(\d{2})\/(\d{2})\//);
+      if (urlMatch) data = `${urlMatch[3]}/${urlMatch[2]}/${urlMatch[1]}`;
+    }
+    if (data === '[DATA NÃO ENCONTRADA]') {
+      // Fallback: span dentro de .widget--info__meta (ex: "05/12/2024 19:04")
+      const metaEl = card.querySelector('.widget--info__meta span') || card.querySelector('.widget--info__meta');
+      const metaText = metaEl ? metaEl.textContent!.trim() : '';
+      const spanMatch = metaText.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      if (spanMatch) data = `${spanMatch[1]}/${spanMatch[2]}/${spanMatch[3]}`;
+    }
 
     results.push({ titulo, preview, link, data });
   });
