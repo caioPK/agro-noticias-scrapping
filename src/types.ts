@@ -23,20 +23,48 @@ export interface ScraperModule {
 }
 
 /**
+ * Opções de leitura de URLs (Fase 2).
+ */
+export interface ReadUrlsOptions {
+  /**
+   * Se true, ignora as linhas que já têm conteúdo na coluna de output.
+   * Permite retomar um processamento interrompido sem refazer tudo.
+   */
+  skipFilled?: boolean;
+}
+
+/**
  * Interface abstrata para fonte de dados (Google Sheets ou Excel local).
  *
- * Qualquer backend de planilha deve implementar esses 3 métodos.
+ * Qualquer backend de planilha deve implementar esses métodos.
  */
 export interface DataSource {
-  /** Lê as URLs da coluna configurada. Retorna pares {linha, url}. */
-  readUrls(): Promise<{ row: number; url: string }[]>;
+  /**
+   * Define a aba a ser usada, sobrescrevendo SHEET_NAME do .env.
+   * Deve ser chamado antes de qualquer leitura/escrita.
+   */
+  setSheetName(sheetName: string): void;
 
-  /** Escreve o resultado na célula de output correspondente à linha. */
+  /** Lista as abas disponíveis na planilha. */
+  listSheetNames(): Promise<string[]>;
+
+  /** Lê as URLs da coluna configurada. Retorna pares {linha, url}. */
+  readUrls(options?: ReadUrlsOptions): Promise<{ row: number; url: string }[]>;
+
+  /**
+   * Escreve o resultado na célula de output correspondente à linha.
+   *
+   * Quando o texto excede o limite de uma célula, o excedente é gravado
+   * em colunas de overflow (F, G, H, ...) — ver writeResult das implementações.
+   */
   writeResult(row: number, value: string, truncated?: boolean): Promise<void>;
 
   /** Escreve uma mensagem de erro na célula de output correspondente. */
   writeError(row: number, error: string): Promise<void>;
 
-  /** Lê os dados (URL e Conteúdo) da planilha para exportação (ex: Fase 3). */
+  /**
+   * Lê os dados (URL e Conteúdo) da planilha para exportação (ex: Fase 3).
+   * O `content` já vem com as colunas de overflow concatenadas.
+   */
   readExportData(): Promise<{ row: number; url: string; content: string }[]>;
 }

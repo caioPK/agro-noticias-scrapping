@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import ExcelJS from 'exceljs';
 import { config } from './config';
-import { DataSource } from './types';
+import { DataSource, ReadUrlsOptions } from './types';
 
 /**
  * Converte letra de coluna para número (A=1, B=2, ..., Z=26, AA=27, etc.)
@@ -16,6 +16,27 @@ function columnLetterToNumber(letter: string): number {
 }
 
 /**
+ * Converte número de coluna para letra (1=A, 2=B, ..., 27=AA).
+ * Usado apenas para logging legível.
+ */
+function columnNumberToLetter(num: number): string {
+  let result = '';
+  let n = num;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    result = String.fromCharCode('A'.charCodeAt(0) + rem) + result;
+    n = Math.floor((n - 1) / 26);
+  }
+  return result;
+}
+
+/** Limite prático de caracteres por célula (Excel permite ~32767, folga aplicada). */
+const MAX_CELL_LENGTH = 32000;
+
+/** Quantas colunas de overflow no máximo (evita loop infinito em texto gigante). */
+const MAX_OVERFLOW_COLUMNS = 20;
+
+/**
  * Implementação do DataSource usando arquivo Excel local (.xlsx).
  *
  * O arquivo é lido ao chamar readUrls() e salvo após cada writeResult/writeError.
@@ -24,9 +45,20 @@ function columnLetterToNumber(letter: string): number {
 export class ExcelDataSource implements DataSource {
   private workbook: ExcelJS.Workbook | null = null;
   private filePath: string;
+  private sheetName: string;
 
-  constructor(customFilePath?: string) {
+  constructor(customFilePath?: string, sheetName?: string) {
     this.filePath = customFilePath || config.excelFilePath;
+    this.sheetName = sheetName || config.sheetName;
+  }
+
+  setSheetName(sheetName: string): void {
+    this.sheetName = sheetName;
+  }
+
+  async listSheetNames(): Promise<string[]> {
+    const workbook = await this.getWorkbook();
+    return workbook.worksheets.map(ws => ws.name);
   }
 
   /**
@@ -55,16 +87,54 @@ export class ExcelDataSource implements DataSource {
   private async getWorksheet(): Promise<ExcelJS.Worksheet> {
     const workbook = await this.getWorkbook();
 
-    const worksheet = workbook.getWorksheet(config.sheetName);
+    const worksheet = workbook.getWorksheet(this.sheetName);
     if (!worksheet) {
       const available = workbook.worksheets.map(ws => ws.name).join(', ');
       throw new Error(
-        `Aba "${config.sheetName}" não encontrada no arquivo Excel.\n` +
+        `Aba "${this.sheetName}" não encontrada no arquivo Excel.\n` +
         `Abas disponíveis: ${available}`
       );
     }
 
     return worksheet;
+  }
+
+  /**
+   * Extrai o texto de uma célula, lidando com os vários formatos que o
+   * ExcelJS pode devolver (string, hyperlink, rich text, fórmula).
+   */
+  private cellToText(value: ExcelJS.CellValue): string {
+    return this.cellToRawText(value).trim();
+  }
+
+  /**
+   * Igual a cellToText, mas sem trim — usado ao concatenar blocos de overflow,
+   * onde o corte pode ter caído no meio de uma palavra ou num espaço.
+   */
+  private cellToRawText(value: ExcelJS.CellValue): string {
+    if (value === null || value === undefined) return '';
+
+    if (typeof value === 'object') {
+      const obj = value as any;
+
+      // Hyperlink: { text, hyperlink }
+      if ('hyperlink' in obj) {
+        return (obj.hyperlink || obj.text || '').toString();
+      }
+      // Rich text: { richText: [{ text }, ...] }
+      if ('richText' in obj && Array.isArray(obj.richText)) {
+        return obj.richText.map((rt: any) => rt.text).join('');
+      }
+      // Fórmula: { formula, result }
+      if ('result' in obj) {
+        return (obj.result ?? '').toString();
+      }
+      if ('text' in obj) {
+        return obj.text.toString();
+      }
+    }
+
+    return value.toString();
   }
 
   /**
@@ -75,96 +145,174 @@ export class ExcelDataSource implements DataSource {
     await this.workbook.xlsx.writeFile(this.filePath);
   }
 
-  async readUrls(): Promise<{ row: number; url: string }[]> {
+  async readUrls(options: ReadUrlsOptions = {}): Promise<{ row: number; url: string }[]> {
     const worksheet = await this.getWorksheet();
-    const colNumber = columnLetterToNumber(config.urlColumn.toUpperCase());
+    const urlCol = columnLetterToNumber(config.urlColumn.toUpperCase());
+    const outputCol = columnLetterToNumber(config.outputColumn.toUpperCase());
     const results: { row: number; url: string }[] = [];
 
     const lastRow = worksheet.rowCount;
+    let skipped = 0;
 
     for (let rowNum = config.startRow; rowNum <= lastRow; rowNum++) {
-      const cell = worksheet.getCell(rowNum, colNumber);
-      const value = cell.value;
-
-      let url = '';
-      if (value !== null && value !== undefined) {
-        // ExcelJS pode retornar hyperlinks como objetos { text, hyperlink }
-        if (typeof value === 'object' && 'hyperlink' in (value as any)) {
-          url = ((value as any).hyperlink || (value as any).text || '').toString().trim();
-        } else if (typeof value === 'object' && 'text' in (value as any)) {
-          url = (value as any).text.toString().trim();
-        } else {
-          url = value.toString().trim();
-        }
-      }
+      let url = this.cellToText(worksheet.getCell(rowNum, urlCol).value);
 
       // Remove aspas simples do início e/ou do fim, se existirem
       url = url.replace(/^'|'$/g, '');
 
-      if (url) {
-        results.push({ row: rowNum, url });
+      if (!url) continue;
+
+      // Pula linhas já processadas (coluna de output preenchida)
+      if (options.skipFilled) {
+        const existing = this.cellToText(worksheet.getCell(rowNum, outputCol).value);
+        if (existing) {
+          skipped++;
+          continue;
+        }
       }
+
+      results.push({ row: rowNum, url });
     }
 
-    console.log(`📋 ${results.length} URLs encontradas no Excel (aba: ${config.sheetName})`);
+    if (options.skipFilled) {
+      console.log(
+        `⏭️  ${skipped} linhas puladas (coluna ${config.outputColumn.toUpperCase()} já preenchida)`
+      );
+    }
+    console.log(`📋 ${results.length} URLs a processar no Excel (aba: ${this.sheetName})`);
     return results;
   }
 
-  async writeResult(row: number, value: string, truncated = false): Promise<void> {
+  /**
+   * Escreve o resultado, distribuindo o excedente em colunas de overflow.
+   *
+   * Layout (com OUTPUT_COLUMN=D):
+   *   D → primeiro bloco de até MAX_CELL_LENGTH caracteres
+   *   E → flag booleana de truncamento
+   *   F, G, H, ... → blocos seguintes, na ordem
+   */
+  async writeResult(row: number, value: string, _truncated = false): Promise<void> {
     const worksheet = await this.getWorksheet();
-    const colNumber = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const outputCol = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const flagCol = outputCol + 1;
+    const overflowStartCol = outputCol + 2;
 
-    worksheet.getCell(row, colNumber).value = value;
-    worksheet.getCell(row, (colNumber + 1)).value = truncated;
+    // Fatia o texto em blocos que caibam numa célula
+    const chunks: string[] = [];
+    for (let i = 0; i < value.length; i += MAX_CELL_LENGTH) {
+      chunks.push(value.substring(i, i + MAX_CELL_LENGTH));
+      if (chunks.length >= MAX_OVERFLOW_COLUMNS + 1) break;
+    }
+    if (chunks.length === 0) chunks.push('');
+
+    // Se ainda sobrou texto além do limite de colunas, marca no último bloco
+    const written = chunks.length * MAX_CELL_LENGTH;
+    const hardTruncated = value.length > written;
+    if (hardTruncated) {
+      chunks[chunks.length - 1] += '\n\n[...TRUNCADO]';
+    }
+
+    // Bloco principal na coluna de output
+    worksheet.getCell(row, outputCol).value = chunks[0];
+
+    // Flag: houve overflow (texto continua em outras colunas)?
+    worksheet.getCell(row, flagCol).value = chunks.length > 1;
+
+    // Blocos seguintes nas colunas de overflow
+    for (let i = 1; i < chunks.length; i++) {
+      worksheet.getCell(row, overflowStartCol + i - 1).value = chunks[i];
+    }
+
+    // Limpa colunas de overflow remanescentes de uma execução anterior mais longa
+    for (let i = chunks.length; i <= MAX_OVERFLOW_COLUMNS; i++) {
+      const cell = worksheet.getCell(row, overflowStartCol + i - 1);
+      if (cell.value !== null && cell.value !== undefined) {
+        cell.value = null;
+      }
+    }
+
     await this.save();
 
-    console.log(`  📝 Resultado escrito na célula ${config.outputColumn}${row}`);
+    const outLetter = config.outputColumn.toUpperCase();
+    if (chunks.length > 1) {
+      const firstOverflow = columnNumberToLetter(overflowStartCol);
+      const lastOverflow = columnNumberToLetter(overflowStartCol + chunks.length - 2);
+      const overflowRange =
+        firstOverflow === lastOverflow ? firstOverflow : `${firstOverflow}-${lastOverflow}`;
+      console.log(
+        `  📝 Resultado escrito em ${outLetter}${row} + overflow ${overflowRange}${row} ` +
+        `(${chunks.length} blocos, ${value.length} chars)` +
+        (hardTruncated ? ' ⚠️ TRUNCADO' : '')
+      );
+    } else {
+      console.log(`  📝 Resultado escrito na célula ${outLetter}${row}`);
+    }
   }
 
   async writeError(row: number, error: string): Promise<void> {
     const worksheet = await this.getWorksheet();
-    const colNumber = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const outputCol = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const overflowStartCol = outputCol + 2;
 
-    worksheet.getCell(row, colNumber).value = `[ERRO] ${error}`;
+    worksheet.getCell(row, outputCol).value = `[ERRO] ${error}`;
+    worksheet.getCell(row, outputCol + 1).value = false;
+
+    // Limpa overflow de uma execução anterior bem-sucedida
+    for (let i = 0; i < MAX_OVERFLOW_COLUMNS; i++) {
+      const cell = worksheet.getCell(row, overflowStartCol + i);
+      if (cell.value !== null && cell.value !== undefined) {
+        cell.value = null;
+      }
+    }
+
     await this.save();
 
-    console.log(`  ❌ Erro escrito na célula ${config.outputColumn}${row}`);
+    console.log(`  ❌ Erro escrito na célula ${config.outputColumn.toUpperCase()}${row}`);
   }
 
   async readExportData(): Promise<{ row: number; url: string; content: string }[]> {
     const worksheet = await this.getWorksheet();
-    const urlColNumber = columnLetterToNumber(config.urlColumn.toUpperCase());
-    const outputColNumber = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const urlCol = columnLetterToNumber(config.urlColumn.toUpperCase());
+    const outputCol = columnLetterToNumber(config.outputColumn.toUpperCase());
+    const overflowStartCol = outputCol + 2;
     const results: { row: number; url: string; content: string }[] = [];
 
     const lastRow = worksheet.rowCount;
+    let withOverflow = 0;
 
     for (let rowNum = config.startRow; rowNum <= lastRow; rowNum++) {
-      const urlCell = worksheet.getCell(rowNum, urlColNumber);
-      const urlValue = urlCell.value;
-
-      let url = '';
-      if (urlValue !== null && urlValue !== undefined) {
-        if (typeof urlValue === 'object' && 'hyperlink' in (urlValue as any)) {
-          url = ((urlValue as any).hyperlink || (urlValue as any).text || '').toString().trim();
-        } else if (typeof urlValue === 'object' && 'text' in (urlValue as any)) {
-          url = (urlValue as any).text.toString().trim();
-        } else {
-          url = urlValue.toString().trim();
-        }
-      }
-
+      let url = this.cellToText(worksheet.getCell(rowNum, urlCol).value);
       url = url.replace(/^'|'$/g, '');
 
-      const outputCell = worksheet.getCell(rowNum, outputColNumber);
-      const content = outputCell.value ? outputCell.value.toString().trim() : '';
+      if (!url) continue;
 
-      if (url) {
-        results.push({ row: rowNum, url, content });
+      // Bloco principal + colunas de overflow (F, G, H, ...) concatenados.
+      // Sem trim nas junções: o corte pode ter caído no meio de uma palavra.
+      let content = this.cellToRawText(worksheet.getCell(rowNum, outputCol).value);
+      let hasOverflow = false;
+
+      for (let i = 0; i < MAX_OVERFLOW_COLUMNS; i++) {
+        const raw = worksheet.getCell(rowNum, overflowStartCol + i).value;
+        if (raw === null || raw === undefined || raw === '') break;
+
+        const chunk = this.cellToRawText(raw);
+        if (!chunk) break;
+
+        content += chunk;
+        hasOverflow = true;
       }
+
+      content = content.trim();
+
+      if (hasOverflow) withOverflow++;
+
+      results.push({ row: rowNum, url, content });
     }
 
     console.log(`📋 ${results.length} registros (URLs + Conteúdo) carregados para exportação.`);
+    if (withOverflow > 0) {
+      console.log(`🔗 ${withOverflow} registros tiveram colunas de overflow concatenadas.`);
+    }
     return results;
   }
 }

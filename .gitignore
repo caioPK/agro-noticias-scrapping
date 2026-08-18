@@ -3,3 +3,6 @@ dist/
 .env
 credentials.json
 *.log
+
+# Scraper output (regenerable, large)
+results-list/

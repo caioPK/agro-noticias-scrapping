@@ -28,6 +28,89 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Monta a lista de arquivos selecionáveis: planilha principal (.env) +
+ * planilhas geradas pela Fase 1 em /results-list.
+ */
+function buildFileChoices(): { name: string; value: string }[] {
+  const resultFiles = listResultFiles(RESULTS_LIST_DIR)
+    .filter(f => f.file.endsWith('.xlsx'))
+    // Ignora arquivos de lock do Excel (~$nome.xlsx)
+    .filter(f => !f.file.startsWith('~$'));
+
+  const choices: { name: string; value: string }[] = [
+    {
+      name: `📊 Planilha principal (${path.basename(config.excelFilePath)})`,
+      value: '__MAIN__',
+    },
+  ];
+
+  choices.push(
+    ...resultFiles.map(f => ({
+      name: `📄 ${f.file}  (results-list)`,
+      value: f.fullPath,
+    }))
+  );
+
+  return choices;
+}
+
+/**
+ * Cria o DataSource para o arquivo escolhido e pergunta qual aba usar.
+ *
+ * A aba escolhida sobrescreve SHEET_NAME do .env. Se a planilha tiver apenas
+ * uma aba, ela é selecionada automaticamente sem perguntar.
+ */
+async function createDataSourceWithSheet(selectedFile: string): Promise<DataSource> {
+  let dataSource: DataSource;
+
+  if (selectedFile === '__MAIN__') {
+    // Usa a planilha principal configurada no .env
+    dataSource = createDataSource();
+  } else {
+    // Usa uma planilha da Fase 1
+    console.log(`📊 Usando arquivo: ${path.basename(selectedFile)}`);
+    dataSource = new ExcelDataSource(selectedFile);
+  }
+
+  // Pergunta a aba
+  let sheetNames: string[] = [];
+  try {
+    sheetNames = await dataSource.listSheetNames();
+  } catch (err: any) {
+    console.warn(`⚠️  Não foi possível listar as abas: ${err.message}`);
+    console.warn(`   Usando SHEET_NAME do .env: "${config.sheetName}"`);
+    return dataSource;
+  }
+
+  if (sheetNames.length === 0) {
+    console.warn(`⚠️  Nenhuma aba encontrada. Usando SHEET_NAME do .env: "${config.sheetName}"`);
+    return dataSource;
+  }
+
+  if (sheetNames.length === 1) {
+    console.log(`📑 Aba: ${sheetNames[0]} (única disponível)`);
+    dataSource.setSheetName(sheetNames[0]);
+    return dataSource;
+  }
+
+  const { select } = await getInquirer();
+  const chosenSheet = await select({
+    message: 'Qual aba deseja trabalhar?',
+    choices: sheetNames.map(name => ({
+      // Marca a aba configurada no .env como sugestão
+      name: name === config.sheetName ? `📑 ${name}  (padrão do .env)` : `📑 ${name}`,
+      value: name,
+    })),
+    default: sheetNames.includes(config.sheetName) ? config.sheetName : sheetNames[0],
+  });
+
+  dataSource.setSheetName(chosenSheet);
+  console.log(`📑 Aba selecionada: ${chosenSheet}`);
+
+  return dataSource;
+}
+
 // ─── Fase 2: Processar URLs (scraping de conteúdo) ────────────────────────────
 
 async function processUrl(
@@ -69,14 +152,10 @@ async function processUrl(
       console.log(`  ⚠️  Scraper retornou texto vazio`);
       await dataSource.writeResult(row, '[VAZIO] Nenhum conteúdo extraído');
     } else {
-      // Trunca se for muito grande (limite ~50k caracteres por célula no Google Sheets / Excel)
-      const maxLength = 49000;
-      const truncated = result.length > maxLength
-        ? result.substring(0, maxLength) + '\n\n[...TRUNCADO]'
-        : result;
-
+      // O texto completo vai inteiro para o DataSource, que fatia em blocos
+      // e distribui o excedente nas colunas de overflow (F, G, H, ...).
       console.log(`  ✅ Extraído: ${result.length} caracteres`);
-      await dataSource.writeResult(row, truncated, result.length > maxLength);
+      await dataSource.writeResult(row, result);
     }
   } catch (error: any) {
     console.error(`  ❌ Erro na linha ${row}: ${error.message}`);
@@ -150,41 +229,22 @@ async function runFase2(): Promise<void> {
   console.log('═══════════════════════════════════════════════════\n');
 
   // Monta a lista de fontes disponíveis
-  const resultFiles = listResultFiles(RESULTS_LIST_DIR)
-    .filter(f => f.file.endsWith('.xlsx'));
-
-  const choices: { name: string; value: string }[] = [
-    {
-      name: `📊 Planilha principal (${path.basename(config.excelFilePath)})`,
-      value: '__MAIN__',
-    },
-  ];
-
-  if (resultFiles.length > 0) {
-    choices.push(
-      ...resultFiles.map(f => ({
-        name: `📄 ${f.file}  (results-list)`,
-        value: f.fullPath,
-      }))
-    );
-  }
-
-  const { select } = await getInquirer();
+  const { select, confirm } = await getInquirer();
   const selectedFile = await select({
     message: 'Qual arquivo de URLs deseja processar?',
-    choices,
+    choices: buildFileChoices(),
   });
 
-  let dataSource: DataSource;
+  // Cria o DataSource e escolhe a aba
+  const dataSource = await createDataSourceWithSheet(selectedFile);
 
-  if (selectedFile === '__MAIN__') {
-    // Usa a planilha principal configurada no .env
-    dataSource = createDataSource();
-  } else {
-    // Usa uma planilha da Fase 1
-    console.log(`📊 Usando arquivo: ${path.basename(selectedFile)}`);
-    dataSource = new ExcelDataSource(selectedFile);
-  }
+  // Pergunta se deve pular as linhas já processadas
+  const skipFilled = await confirm({
+    message:
+      `Processar apenas as linhas SEM conteúdo na coluna ` +
+      `${config.outputColumn.toUpperCase()}? (pula as já feitas)`,
+    default: true,
+  });
 
   // Lista scrapers disponíveis
   const availableScrapers = listAvailableScrapers();
@@ -196,10 +256,14 @@ async function runFase2(): Promise<void> {
   }
 
   // Lê as URLs da planilha
-  const urls = await dataSource.readUrls();
+  const urls = await dataSource.readUrls({ skipFilled });
 
   if (urls.length === 0) {
-    console.log('ℹ️  Nenhuma URL encontrada na planilha. Nada a fazer.');
+    console.log(
+      skipFilled
+        ? 'ℹ️  Nenhuma URL pendente na planilha (todas já processadas). Nada a fazer.'
+        : 'ℹ️  Nenhuma URL encontrada na planilha. Nada a fazer.'
+    );
     return;
   }
 
@@ -247,39 +311,16 @@ async function runFase3(): Promise<void> {
   console.log('  📑 FASE 3 — Exportar para Iramuteq');
   console.log('═══════════════════════════════════════════════════\n');
 
-  const resultFiles = listResultFiles(RESULTS_LIST_DIR)
-    .filter(f => f.file.endsWith('.xlsx'));
-
-  const choices: { name: string; value: string }[] = [
-    {
-      name: `📊 Planilha principal (${path.basename(config.excelFilePath)})`,
-      value: '__MAIN__',
-    },
-  ];
-
-  if (resultFiles.length > 0) {
-    choices.push(
-      ...resultFiles.map(f => ({
-        name: `📄 ${f.file}  (results-list)`,
-        value: f.fullPath,
-      }))
-    );
-  }
-
   const { select } = await getInquirer();
   const selectedFile = await select({
     message: 'Qual arquivo deseja exportar?',
-    choices,
+    choices: buildFileChoices(),
   });
 
-  let dataSource: DataSource;
-  if (selectedFile === '__MAIN__') {
-    dataSource = createDataSource();
-  } else {
-    console.log(`📊 Usando arquivo: ${path.basename(selectedFile)}`);
-    dataSource = new ExcelDataSource(selectedFile);
-  }
+  // Cria o DataSource e escolhe a aba
+  const dataSource = await createDataSourceWithSheet(selectedFile);
 
+  // O content já vem com as colunas de overflow (F, G, ...) concatenadas
   const data = await dataSource.readExportData();
 
   if (data.length === 0) {
